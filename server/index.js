@@ -15,6 +15,11 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/chat-app';
 
+// Helper to broadcast user status updates
+const broadcastUserStatus = (userId, isOnline) => {
+  io.emit('user_status_change', { userId, isOnline });
+};
+
 mongoose.connect(mongoUri)
   .then(() => console.log('✅ MongoDB Connected!'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
@@ -54,6 +59,18 @@ io.on('connection', (socket) => {
       socket.emit('login_success', user);
 
       // --- NEW CODE STARTS HERE ---
+
+      user.is_online = true;
+      await user.save();
+
+      socket.data.user = user;
+      socket.emit('login_success', user);
+
+      // NEW: Tell everyone else "User X is Online"
+      socket.broadcast.emit('user_status_change', {
+        userId: user._id,
+        isOnline: true
+      });
 
       // 2. Fetch Chat History
       // We need to find the room ID first to get its messages
@@ -126,7 +143,24 @@ io.on('connection', (socket) => {
   socket.on('disconnect', async () => {
     if (socket.data.user) {
       await User.findByIdAndUpdate(socket.data.user._id, { is_online: false });
-      console.log(`❌ User Disconnected: ${socket.data.user.username}`);
+
+      // NEW: Tell everyone "User X is Offline"
+      io.emit('user_status_change', {
+        userId: socket.data.user._id,
+        isOnline: false
+      });
+    }
+  });
+
+  // EVENT: Get list of all users (for the Contacts screen)
+  socket.on('get_users', async () => {
+    try {
+      // Find all users EXCEPT the one requesting (don't chat with yourself)
+      const users = await User.find({ _id: { $ne: socket.data.user._id } })
+        .select('-password'); // Exclude password if you had one
+      socket.emit('users_list', users);
+    } catch (err) {
+      console.error(err);
     }
   });
 });
