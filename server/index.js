@@ -37,6 +37,25 @@ async function getGlobalRoom() {
   return room;
 }
 
+// Helper: Get or Create a Private Room between two users
+async function getPrivateConversation(user1Id, user2Id) {
+  // 1. Try to find a conversation with these exact 2 participants
+  let conversation = await Conversation.findOne({
+    participants: { $all: [user1Id, user2Id] }
+  });
+
+  // 2. If not found, create a new one
+  if (!conversation) {
+    conversation = new Conversation({
+      participants: [user1Id, user2Id],
+      last_message: 'Start of conversation'
+    });
+    await conversation.save();
+    console.log(`🆕 Created Private Room for ${user1Id} & ${user2Id}`);
+  }
+  return conversation;
+}
+
 io.on('connection', (socket) => {
   console.log('⚡ Connection attempt:', socket.id);
 
@@ -100,39 +119,38 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. EVENT: Chat Message (THIS WAS MISSING)
+  // EVENT: Chat Message (Upgraded for Private Rooms)
   socket.on('chat_message', async (msgData) => {
     try {
-      // Security Check: Ensure user is logged in
       if (!socket.data.user) return;
 
-      console.log('📩 Message Received:', msgData.content);
+      const { content, roomId } = msgData; // Client must now send roomId
+      console.log(`📩 Message to ${roomId}:`, content);
 
-      // A. Find the Global Room
-      const room = await getGlobalRoom();
-
-      // B. Save Message to MongoDB
+      // A. Save to MongoDB
       const newMessage = new Message({
-        conversation_id: room._id,
+        conversation_id: roomId,
         sender_id: socket.data.user._id,
-        content: msgData.content,
+        content: content,
       });
       await newMessage.save();
 
-      // C. Update the Room's "last message" (for previews)
-      room.last_message = msgData.content;
-      await room.save();
+      // B. Update Last Message Preview
+      await Conversation.findByIdAndUpdate(roomId, {
+        last_message: content,
+        updatedAt: new Date()
+      });
 
-      // D. Broadcast to everyone (Adding the sender's name for the UI)
-      // We construct a UI-friendly object to send back
+      // C. Broadcast ONLY to that room
       const outgoingMessage = {
         content: newMessage.content,
         sender_id: newMessage.sender_id,
-        sender_name: socket.data.user.username, // Attach name so clients don't show "Unknown"
+        sender_name: socket.data.user.username,
         timestamp: newMessage.createdAt
       };
 
-      io.emit('chat_message', outgoingMessage);
+      // use 'to(roomId)' so only people in this chat see it!
+      io.to(roomId).emit('chat_message', outgoingMessage);
 
     } catch (err) {
       console.error('Message Error:', err);
@@ -161,6 +179,43 @@ io.on('connection', (socket) => {
       socket.emit('users_list', users);
     } catch (err) {
       console.error(err);
+    }
+  });
+
+  // EVENT: User wants to chat with specific person
+  socket.on('join_private_chat', async (targetUserId) => {
+    try {
+      const myUserId = socket.data.user._id;
+
+      // 1. Get the Room ID from DB
+      const room = await getPrivateConversation(myUserId, targetUserId);
+      const roomId = room._id.toString();
+
+      // 2. Join the Socket.io Room (This is the magic part!)
+      socket.join(roomId);
+      console.log(`🔌 Socket ${socket.id} joined room ${roomId}`);
+
+      // 3. Fetch History for this specific room
+      const history = await Message.find({ conversation_id: roomId })
+        .sort({ createdAt: 1 })
+        .limit(50)
+        .populate('sender_id', 'username');
+
+      // 4. Send "Ready" signal to client with data
+      const formattedHistory = history.map(msg => ({
+        content: msg.content,
+        sender_id: msg.sender_id._id,
+        sender_name: msg.sender_id.username,
+        timestamp: msg.createdAt
+      }));
+
+      socket.emit('private_chat_ready', {
+        roomId: roomId,
+        history: formattedHistory
+      });
+
+    } catch (err) {
+      console.error('Private Chat Error:', err);
     }
   });
 });
