@@ -3,11 +3,14 @@ const http = require('http');
 const { Server } = require("socket.io");
 const mongoose = require('mongoose');
 
-// Import All Models
+// Import Models
 const User = require('./models/User');
 const Message = require('./models/Message');
 const Conversation = require('./models/Conversation');
 
+// -----------------------------------
+// 1. CONFIGURATION & SETUP
+// -----------------------------------
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -15,20 +18,30 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/chat-app';
 
-// Helper to broadcast user status updates
-const broadcastUserStatus = (userId, isOnline) => {
-  io.emit('user_status_change', { userId, isOnline });
-};
-
+// -----------------------------------
+// 2. DATABASE CONNECTION
+// -----------------------------------
 mongoose.connect(mongoUri)
   .then(() => console.log('✅ MongoDB Connected!'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// Helper: Get or Create a "Global" Chat Room
+// -----------------------------------
+// 3. HELPER FUNCTIONS
+// -----------------------------------
+
+// Helper: Broadcast status updates (Online/Offline) to all clients
+const broadcastUserStatus = (userId, isOnline) => {
+  io.emit('user_status_change', { userId, isOnline });
+};
+
+// Helper: Get or Create a "Global" Chat Room (Legacy/Fallback)
 async function getGlobalRoom() {
-  // We look for ANY conversation. If none exists, create one.
-  // In a real app, you would look for specific participants.
-  let room = await Conversation.findOne();
+  let room = await Conversation.findOne({ is_global: true }); // Assuming you might flag global rooms
+  // If no specific flag, fallback to finding ANY room or creating a default
+  if (!room) {
+    room = await Conversation.findOne();
+  }
+
   if (!room) {
     room = new Conversation({ last_message: "Welcome to Global Chat" });
     await room.save();
@@ -56,53 +69,48 @@ async function getPrivateConversation(user1Id, user2Id) {
   return conversation;
 }
 
+// -----------------------------------
+// 4. SOCKET LOGIC
+// -----------------------------------
 io.on('connection', (socket) => {
   console.log('⚡ Connection attempt:', socket.id);
 
-  // 1. EVENT: User Logs In
+  // --- EVENT: User Logs In ---
   socket.on('login', async (username) => {
     try {
-      // 1. Find or Create User (Same as before)
+      // 1. Find or Create User
       let user = await User.findOne({ username });
+
       if (!user) {
         user = new User({ username, is_online: true });
-        await user.save();
         console.log(`🆕 New User Created: ${username}`);
       } else {
         user.is_online = true;
-        await user.save();
         console.log(`👋 User Logged In: ${username}`);
       }
 
-      socket.data.user = user;
-      socket.emit('login_success', user);
-
-      // --- NEW CODE STARTS HERE ---
-
-      user.is_online = true;
+      // Save status to DB
       await user.save();
 
+      // 2. Attach user data to the socket session
       socket.data.user = user;
+
+      // 3. Send success to the user who logged in
       socket.emit('login_success', user);
 
-      // NEW: Tell everyone else "User X is Online"
+      // 4. Broadcast to OTHERS that this user is now Online
       socket.broadcast.emit('user_status_change', {
         userId: user._id,
         isOnline: true
       });
 
-      // 2. Fetch Chat History
-      // We need to find the room ID first to get its messages
+      // 5. Fetch Global History (Optional: kept to maintain exact functionality)
       const room = await getGlobalRoom();
-
-      // Find messages for this room, sort by time (oldest first), limit to 50
       const history = await Message.find({ conversation_id: room._id })
         .sort({ createdAt: 1 })
         .limit(50)
-        .populate('sender_id', 'username'); // "Join" operation to get username strings
+        .populate('sender_id', 'username');
 
-      // 3. Send History to Client
-      // We map the data to match the format our Flutter app expects
       const formattedHistory = history.map(msg => ({
         content: msg.content,
         sender_id: msg.sender_id._id,
@@ -112,19 +120,17 @@ io.on('connection', (socket) => {
 
       socket.emit('history_load', formattedHistory);
 
-      // --- NEW CODE ENDS HERE ---
-
     } catch (err) {
       console.error('Login Error:', err);
     }
   });
 
-  // EVENT: Chat Message (Upgraded for Private Rooms)
+  // --- EVENT: Chat Message ---
   socket.on('chat_message', async (msgData) => {
     try {
       if (!socket.data.user) return;
 
-      const { content, roomId } = msgData; // Client must now send roomId
+      const { content, roomId } = msgData;
       console.log(`📩 Message to ${roomId}:`, content);
 
       // A. Save to MongoDB
@@ -142,90 +148,59 @@ io.on('connection', (socket) => {
       });
 
       // C. Broadcast ONLY to that room
-      const outgoingMessage = {
+      io.to(roomId).emit('chat_message', {
         content: newMessage.content,
         sender_id: newMessage.sender_id,
         sender_name: socket.data.user.username,
         timestamp: newMessage.createdAt
-      };
-
-      // use 'to(roomId)' so only people in this chat see it!
-      io.to(roomId).emit('chat_message', outgoingMessage);
+      });
 
     } catch (err) {
       console.error('Message Error:', err);
     }
   });
 
-  // EVENT: Typing Indicator
+  // --- EVENT: Typing Indicators ---
   socket.on('typing', (roomId) => {
-    // --- ADD THIS LOG ---
-    console.log(`✍️ User ${socket.data.user.username} is typing in room ${roomId}`);
-
+    if (!socket.data.user) return;
+    console.log(`✍️ ${socket.data.user.username} typing in ${roomId}`);
     socket.to(roomId).emit('display_typing', {
       username: socket.data.user.username
     });
   });
 
-  // EVENT: Stop Typing
   socket.on('stop_typing', (roomId) => {
-    // --- ADD THIS LOG ---
-    console.log(`🛑 User ${socket.data.user.username} stopped typing`);
-
+    if (!socket.data.user) return;
+    console.log(`🛑 ${socket.data.user.username} stopped typing`);
     socket.to(roomId).emit('hide_typing');
   });
 
-  // EVENT: Force Join Room (Safety mechanism)
+  // --- EVENT: Room Management ---
   socket.on('join_room', (roomId) => {
+    if (!socket.data.user) return;
     socket.join(roomId);
-    console.log(`🔧 User ${socket.data.user.username} forcefully joined room: ${roomId}`);
+    console.log(`🔧 ${socket.data.user.username} forcefully joined room: ${roomId}`);
   });
 
-  // 3. EVENT: Disconnect
-  socket.on('disconnect', async () => {
-    if (socket.data.user) {
-      await User.findByIdAndUpdate(socket.data.user._id, { is_online: false });
-
-      // NEW: Tell everyone "User X is Offline"
-      io.emit('user_status_change', {
-        userId: socket.data.user._id,
-        isOnline: false
-      });
-    }
-  });
-
-  // EVENT: Get list of all users (for the Contacts screen)
-  socket.on('get_users', async () => {
-    try {
-      // Find all users EXCEPT the one requesting (don't chat with yourself)
-      const users = await User.find({ _id: { $ne: socket.data.user._id } })
-        .select('-password'); // Exclude password if you had one
-      socket.emit('users_list', users);
-    } catch (err) {
-      console.error(err);
-    }
-  });
-
-  // EVENT: User wants to chat with specific person
   socket.on('join_private_chat', async (targetUserId) => {
     try {
       const myUserId = socket.data.user._id;
 
-      // 1. Get the Room ID from DB
+      // 1. Get/Create Room
       const room = await getPrivateConversation(myUserId, targetUserId);
       const roomId = room._id.toString();
 
-      // 2. Join the Socket.io Room (This is the magic part!)
+      // 2. Join Socket Room
       socket.join(roomId);
       console.log(`🔌 Socket ${socket.id} joined room ${roomId}`);
 
-      // 3. Fetch History for this specific room
+      // 3. Fetch History
       const history = await Message.find({ conversation_id: roomId })
         .sort({ createdAt: 1 })
         .limit(50)
         .populate('sender_id', 'username');
 
-      // 4. Send "Ready" signal to client with data
+      // 4. Send Ready Signal
       const formattedHistory = history.map(msg => ({
         content: msg.content,
         sender_id: msg.sender_id._id,
@@ -242,8 +217,36 @@ io.on('connection', (socket) => {
       console.error('Private Chat Error:', err);
     }
   });
+
+  // --- EVENT: Get Users (Contact List) ---
+  socket.on('get_users', async () => {
+    try {
+      // Return all users except self
+      const users = await User.find({ _id: { $ne: socket.data.user._id } })
+        .select('-password');
+      socket.emit('users_list', users);
+    } catch (err) {
+      console.error('Get Users Error:', err);
+    }
+  });
+
+  // --- EVENT: Disconnect ---
+  socket.on('disconnect', async () => {
+    if (socket.data.user) {
+      console.log(`❌ User Disconnected: ${socket.data.user.username}`);
+
+      // Update DB
+      await User.findByIdAndUpdate(socket.data.user._id, { is_online: false });
+
+      // Notify others using the helper function
+      broadcastUserStatus(socket.data.user._id, false);
+    }
+  });
 });
 
+// -----------------------------------
+// 5. START SERVER
+// -----------------------------------
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
