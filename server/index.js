@@ -157,6 +157,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // EVENT: Typing Indicator
+  socket.on('typing', (roomId) => {
+    // --- ADD THIS LOG ---
+    console.log(`✍️ User ${socket.data.user.username} is typing in room ${roomId}`);
+
+    socket.to(roomId).emit('display_typing', {
+      username: socket.data.user.username
+    });
+  });
+
+  // EVENT: Stop Typing
+  socket.on('stop_typing', (roomId) => {
+    // --- ADD THIS LOG ---
+    console.log(`🛑 User ${socket.data.user.username} stopped typing`);
+
+    socket.to(roomId).emit('hide_typing');
+  });
+
+  // EVENT: Force Join Room (Safety mechanism)
+  socket.on('join_room', (roomId) => {
+    socket.join(roomId);
+    console.log(`🔧 User ${socket.data.user.username} forcefully joined room: ${roomId}`);
+  });
+
   // 3. EVENT: Disconnect
   socket.on('disconnect', async () => {
     if (socket.data.user) {
