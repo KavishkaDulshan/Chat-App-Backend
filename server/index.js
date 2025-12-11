@@ -2,6 +2,9 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const mongoose = require('mongoose');
+const cors = require('cors');           // NEW
+const bcrypt = require('bcryptjs');     // NEW
+const jwt = require('jsonwebtoken');    // NEW
 
 // Import Models
 const User = require('./models/User');
@@ -12,8 +15,12 @@ const Conversation = require('./models/Conversation');
 // 1. CONFIGURATION & SETUP
 // -----------------------------------
 const app = express();
+app.use(express.json()); // NEW: Allows server to read JSON from Flutter
+app.use(cors());         // NEW: Fixes connection permissions
+
 const server = http.createServer(app);
 const io = new Server(server);
+
 
 const PORT = process.env.PORT || 3000;
 const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/chat-app';
@@ -70,60 +77,102 @@ async function getPrivateConversation(user1Id, user2Id) {
 }
 
 // -----------------------------------
+
+// SECRET KEY (In production, put this in a .env file!)
+const JWT_SECRET = 'my_super_secret_key_123';
+
+// --- 1. REGISTER ROUTE ---
+app.post('/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) return res.status(400).json({ error: "User already exists" });
+
+    // Hash the password (Encryption)
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Save User
+    const newUser = new User({
+      username,
+      email,
+      password: hashedPassword
+    });
+    await newUser.save();
+
+    res.status(201).json({ message: "User created successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- 2. LOGIN ROUTE ---
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Find User
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "User not found" });
+
+    // Check Password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+
+    // Generate Token (The "ID Card")
+    const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, {
+      expiresIn: '1h' // Token expires in 1 hour
+    });
+
+    // Send Token & User Info back to Flutter
+    res.json({
+      token,
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 4. SOCKET LOGIC
 // -----------------------------------
 io.on('connection', (socket) => {
   console.log('⚡ Connection attempt:', socket.id);
 
-  // --- EVENT: User Logs In ---
   socket.on('login', async (username) => {
     try {
-      // 1. Find or Create User
-      let user = await User.findOne({ username });
+      // 1. Find the user (We trust the username because they already authenticated via API)
+      const user = await User.findOne({ username });
 
-      if (!user) {
-        user = new User({ username, is_online: true });
-        console.log(`🆕 New User Created: ${username}`);
-      } else {
+      if (user) {
+        // 2. Mark as Online
         user.is_online = true;
-        console.log(`👋 User Logged In: ${username}`);
+        await user.save();
+
+        // 3. Attach user data to the socket session
+        socket.data.user = user;
+
+        // 4. Send Success Signal (CRITICAL: This stops the loading spinner!)
+        socket.emit('login_success', user);
+        console.log(`✅ User Socket Authenticated: ${username}`);
+
+        // 5. Tell everyone else they are online
+        socket.broadcast.emit('user_status_change', {
+          userId: user._id,
+          isOnline: true
+        });
       }
-
-      // Save status to DB
-      await user.save();
-
-      // 2. Attach user data to the socket session
-      socket.data.user = user;
-
-      // 3. Send success to the user who logged in
-      socket.emit('login_success', user);
-
-      // 4. Broadcast to OTHERS that this user is now Online
-      socket.broadcast.emit('user_status_change', {
-        userId: user._id,
-        isOnline: true
-      });
-
-      // 5. Fetch Global History (Optional: kept to maintain exact functionality)
-      const room = await getGlobalRoom();
-      const history = await Message.find({ conversation_id: room._id })
-        .sort({ createdAt: 1 })
-        .limit(50)
-        .populate('sender_id', 'username');
-
-      const formattedHistory = history.map(msg => ({
-        content: msg.content,
-        sender_id: msg.sender_id._id,
-        sender_name: msg.sender_id.username,
-        timestamp: msg.createdAt
-      }));
-
-      socket.emit('history_load', formattedHistory);
-
     } catch (err) {
-      console.error('Login Error:', err);
+      console.error('Socket Login Error:', err);
     }
   });
+  // ---------------------------------------------
 
   // --- EVENT: Chat Message ---
   socket.on('chat_message', async (msgData) => {
