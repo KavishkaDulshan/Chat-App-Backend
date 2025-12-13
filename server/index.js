@@ -147,81 +147,110 @@ io.on('connection', (socket) => {
 
   socket.on('login', async (username) => {
     try {
-      // 1. Find the user (We trust the username because they already authenticated via API)
       const user = await User.findOne({ username });
-
       if (user) {
-        // 2. Mark as Online
         user.is_online = true;
         await user.save();
-
-        // 3. Attach user data to the socket session
         socket.data.user = user;
 
-        // 4. Send Success Signal (CRITICAL: This stops the loading spinner!)
-        socket.emit('login_success', user);
-        console.log(`✅ User Socket Authenticated: ${username}`);
+        // --- FIX 1: Join a "Personal Room" using User ID ---
+        // This ensures we can reach this user no matter what screen they are on
+        socket.join(user._id.toString());
+        // ---------------------------------------------------
 
-        // 5. Tell everyone else they are online
-        socket.broadcast.emit('user_status_change', {
-          userId: user._id,
-          isOnline: true
-        });
+        socket.emit('login_success', user);
+        socket.broadcast.emit('user_status_change', { userId: user._id, isOnline: true });
+        console.log(`✅ User ${username} joined Personal Room: ${user._id}`);
       }
     } catch (err) {
-      console.error('Socket Login Error:', err);
+      console.error(err);
     }
   });
   // ---------------------------------------------
 
   // --- EVENT: Chat Message ---
+  // --- FIX 2: Upgraded Message Handler ---
   socket.on('chat_message', async (msgData) => {
     try {
-      if (!socket.data.user) return;
-
       const { content, roomId } = msgData;
-      console.log(`📩 Message to ${roomId}:`, content);
+      const senderId = socket.data.user._id;
 
-      // A. Save to MongoDB
+      // 1. Save to DB (Keep this same)
       const newMessage = new Message({
         conversation_id: roomId,
-        sender_id: socket.data.user._id,
+        sender_id: senderId,
         content: content,
       });
       await newMessage.save();
 
-      // B. Update Last Message Preview
-      await Conversation.findByIdAndUpdate(roomId, {
+      // 2. Update Conversation (Keep this same)
+      const conversation = await Conversation.findByIdAndUpdate(roomId, {
         last_message: content,
         updatedAt: new Date()
       });
 
-      // C. Broadcast ONLY to that room
-      io.to(roomId).emit('chat_message', {
+      // 3. FIND RECIPIENT
+      // Who else is in this chat?
+      const recipientId = conversation.participants.find(
+        (id) => id.toString() !== senderId.toString()
+      );
+
+      // 4. Construct Payload (ADD roomId so client knows where it belongs)
+      const outgoingMessage = {
         content: newMessage.content,
         sender_id: newMessage.sender_id,
         sender_name: socket.data.user.username,
-        timestamp: newMessage.createdAt
-      });
+        timestamp: newMessage.createdAt,
+        roomId: roomId, // <--- CRITICAL: Client needs this to filter!
+      };
+
+      // 5. SEND DIRECTLY TO USERS (The Fix)
+      // Send to Recipient's Personal Room
+      if (recipientId) {
+        io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
+      }
+      // Send back to Sender (for their UI to update)
+      io.to(senderId.toString()).emit('chat_message', outgoingMessage);
 
     } catch (err) {
       console.error('Message Error:', err);
     }
   });
 
-  // --- EVENT: Typing Indicators ---
-  socket.on('typing', (roomId) => {
-    if (!socket.data.user) return;
-    console.log(`✍️ ${socket.data.user.username} typing in ${roomId}`);
-    socket.to(roomId).emit('display_typing', {
-      username: socket.data.user.username
-    });
+  // --- FIX 3: Upgraded Typing Handler ---
+  socket.on('typing', async (roomId) => {
+    try {
+      // We need to find the recipient to notify them
+      const conversation = await Conversation.findById(roomId);
+      if (!conversation) return;
+
+      const recipientId = conversation.participants.find(
+        (id) => id.toString() !== socket.data.user._id.toString()
+      );
+
+      if (recipientId) {
+        // Send to their personal room
+        io.to(recipientId.toString()).emit('display_typing', {
+          username: socket.data.user.username,
+          roomId: roomId // Client needs this to know WHICH chat is typing
+        });
+      }
+    } catch (e) { }
   });
 
-  socket.on('stop_typing', (roomId) => {
-    if (!socket.data.user) return;
-    console.log(`🛑 ${socket.data.user.username} stopped typing`);
-    socket.to(roomId).emit('hide_typing');
+  socket.on('stop_typing', async (roomId) => {
+    try {
+      const conversation = await Conversation.findById(roomId);
+      if (!conversation) return;
+
+      const recipientId = conversation.participants.find(
+        (id) => id.toString() !== socket.data.user._id.toString()
+      );
+
+      if (recipientId) {
+        io.to(recipientId.toString()).emit('hide_typing', { roomId });
+      }
+    } catch (e) { }
   });
 
   // --- EVENT: Room Management ---
@@ -295,6 +324,54 @@ io.on('connection', (socket) => {
 
 // -----------------------------------
 // 5. START SERVER
+
+// --- 3. SEARCH USER (Exact Match) ---
+app.get('/search', async (req, res) => {
+  try {
+    const { username } = req.query;
+    // Find user (case-insensitive)
+    const user = await User.findOne({
+      username: { $regex: new RegExp(`^${username}$`, 'i') }
+    }).select('-password'); // Don't send password!
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- 4. GET MY CONVERSATIONS (Inbox) ---
+app.get('/conversations/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Find all conversations where I am a participant
+    const conversations = await Conversation.find({
+      participants: userId
+    }).sort({ updatedAt: -1 }); // Newest first
+
+    // We need to fetch the "Other User's" details for each conversation
+    // This is a manual "Join" operation
+    const populatedConversations = await Promise.all(conversations.map(async (conv) => {
+      // Find the participant who is NOT me
+      const otherUserId = conv.participants.find(id => id.toString() !== userId);
+      const otherUser = await User.findById(otherUserId).select('username email is_online');
+
+      return {
+        id: conv._id,
+        otherUser: otherUser, // The friend's details
+        lastMessage: conv.last_message,
+        updatedAt: conv.updatedAt
+      };
+    }));
+
+    res.json(populatedConversations);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -----------------------------------
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
