@@ -7,6 +7,8 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
 
 // Models
 const User = require('./models/User');
@@ -23,6 +25,17 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/chat-app';
 const JWT_SECRET = 'my_super_secret_key_123';
+
+// 1. CONFIGURE CLOUDINARY (Replace with YOUR keys)
+cloudinary.config({
+  cloud_name: 'dpuvlevhr',
+  api_key: '589894594793557',
+  api_secret: 'JLsTwrpYPyBSUT9K85iDut2bAd0'
+});
+
+// 2. CONFIGURE MULTER (Temporary Memory Storage)
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 mongoose.connect(mongoUri)
   .then(() => console.log('✅ MongoDB Connected!'))
@@ -106,6 +119,31 @@ app.get('/conversations/:userId', async (req, res) => {
   }
 });
 
+// --- UPLOAD IMAGE ROUTE ---
+app.post('/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    // Upload to Cloudinary using the buffer
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        { folder: "chat_app_uploads" },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      uploadStream.end(req.file.buffer);
+    });
+
+    // Return the URL to the frontend
+    res.json({ url: result.secure_url });
+  } catch (err) {
+    console.error("Upload Error:", err);
+    res.status(500).json({ error: "Image upload failed" });
+  }
+});
+
 // --- SOCKET LOGIC ---
 
 io.on('connection', (socket) => {
@@ -133,26 +171,31 @@ io.on('connection', (socket) => {
   });
 
   // 2. CHAT MESSAGE (Deliver to Specific Recipient)
+  // INSIDE io.on('connection') ...
+
+  // 2. CHAT MESSAGE (Fixed: Now defines recipientId)
   socket.on('chat_message', async (msgData) => {
     try {
-      const { content, roomId } = msgData;
+      const { content, roomId, type = 'text' } = msgData;
       const senderId = socket.data.user._id;
 
-      // Save to DB
+      // 1. Save to DB
       const newMessage = new Message({
         conversation_id: roomId,
         sender_id: senderId,
         content: content,
+        type: type
       });
       await newMessage.save();
 
-      // Update Conversation
+      // 2. Update Conversation & FIND RECIPIENT
+      // We use { new: true } to get the updated document if needed
       const conversation = await Conversation.findByIdAndUpdate(roomId, {
-        last_message: content,
+        last_message: type === 'image' ? '📷 Image' : content,
         updatedAt: new Date()
-      });
+      }, { new: true });
 
-      // Find Recipient
+      // FIX: This Logic was missing! We must find who to send it to.
       const recipientId = conversation.participants.find(
         (id) => id.toString() !== senderId.toString()
       );
@@ -162,14 +205,14 @@ io.on('connection', (socket) => {
         sender_id: newMessage.sender_id,
         sender_name: socket.data.user.username,
         timestamp: newMessage.createdAt,
-        roomId: roomId, // Client needs this to filter
+        roomId: roomId,
+        type: newMessage.type
       };
 
-      // SEND TO RECIPIENT (Directly)
+      // 3. Emit to Recipient (if online) and Sender
       if (recipientId) {
         io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
       }
-      // SEND TO SENDER (Directly)
       io.to(senderId.toString()).emit('chat_message', outgoingMessage);
 
     } catch (err) {
@@ -226,7 +269,7 @@ io.on('connection', (socket) => {
 
       // --- FIX STARTS HERE ---
 
-      // 1. Get the NEWEST 50 messages (Sort Descending: -1)
+      // 1. Get the NEWEST 50 messages
       const rawMessages = await Message.find({ conversation_id: conversation._id })
         .sort({ createdAt: -1 })
         .limit(50);
@@ -241,7 +284,8 @@ io.on('connection', (socket) => {
         sender_id: m.sender_id,
         sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : 'Partner',
         timestamp: m.createdAt,
-        roomId: conversation._id
+        roomId: conversation._id,
+        type: m.type || 'text' // <--- CRITICAL FIX: Send the type (image/text) to the client
       }));
 
       // Join the room (still useful for context)
