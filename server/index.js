@@ -28,9 +28,9 @@ const JWT_SECRET = 'my_super_secret_key_123';
 
 // 1. CONFIGURE CLOUDINARY (Replace with YOUR keys)
 cloudinary.config({
-  cloud_name: 'dpuvlevhr',
-  api_key: '589894594793557',
-  api_secret: 'JLsTwrpYPyBSUT9K85iDut2bAd0'
+  cloud_name: 'enter here',
+  api_key: 'enter here',
+  api_secret: 'enter here'
 });
 
 // 2. CONFIGURE MULTER (Temporary Memory Storage)
