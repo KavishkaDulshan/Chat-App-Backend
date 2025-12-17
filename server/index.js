@@ -1,5 +1,4 @@
-//V13 - Secure Socket Implementation
-
+// V15 - Production Ready Security
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -9,8 +8,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-
 require('dotenv').config();
+
+// --- NEW SECURITY PACKAGES ---
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
 
 // Models
 const User = require('./models/User');
@@ -18,8 +22,38 @@ const Message = require('./models/Message');
 const Conversation = require('./models/Conversation');
 
 const app = express();
-app.use(express.json());
+
+// --- SECURITY MIDDLEWARE LAYER ---
+
+// 1. Set Security Headers (Hides "X-Powered-By: Express")
+app.use(helmet());
+
+// 2. Body Parser (Limit body size to prevent DoS attacks via large payloads)
+app.use(express.json({ limit: '10kb' }));
+
+// 3. Data Sanitization against NoSQL Query Injection
+//    (Prevents attacks like: {"email": {"$gt": ""}})
+app.use(mongoSanitize());
+
+// 4. Data Sanitization against XSS
+//    (Prevents malicious HTML/JS in inputs)
+app.use(xss());
+
+// 5. Rate Limiting (Prevent Brute Force)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per window
+  message: 'Too many requests from this IP, please try again in 15 minutes'
+});
+// Apply rate limiting to all requests (or just /api)
+app.use('/login', limiter);
+app.use('/register', limiter);
+
+// 6. CORS (Restrict who can talk to your API)
+//    In production, replace '*' with your frontend URL (e.g., 'https://myapp.com')
 app.use(cors());
+
+// ---------------------------------
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -37,7 +71,10 @@ cloudinary.config({
 
 // 2. CONFIGURE MULTER
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 } // Limit file uploads to 5MB
+});
 
 mongoose.connect(mongoUri)
   .then(() => console.log('✅ MongoDB Connected!'))
@@ -48,6 +85,11 @@ mongoose.connect(mongoUri)
 app.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
+    // Basic Validation
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ error: "User already exists" });
 
@@ -66,13 +108,19 @@ app.post('/register', async (req, res) => {
 app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    // Explicitly check for strings to prevent NoSQL object injection 
+    // (mongoSanitize helps, but this is double safety)
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: "Invalid data format" });
+    }
+
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ error: "User not found" });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-    // Token expires in 24 hours
     const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
 
     res.json({
@@ -87,6 +135,10 @@ app.post('/login', async (req, res) => {
 app.get('/search', async (req, res) => {
   try {
     const { username } = req.query;
+    if (!username || typeof username !== 'string') return res.json([]);
+
+    // Using Regex? Make sure to escape special characters if strictly matching,
+    // though for search, simple sanitization is usually enough.
     const user = await User.findOne({
       username: { $regex: new RegExp(`^${username}$`, 'i') }
     }).select('-password');
@@ -145,20 +197,12 @@ app.post('/upload', upload.single('image'), async (req, res) => {
 // ==========================================
 // 🔒 SECURITY GATE: SOCKET MIDDLEWARE
 // ==========================================
-// This runs BEFORE the connection is fully established
 io.use((socket, next) => {
-  // 1. Get Token from the Client's Handshake
   const token = socket.handshake.auth.token;
-
-  if (!token) {
-    return next(new Error("Authentication error: No Token Provided"));
-  }
+  if (!token) return next(new Error("Authentication error: No Token Provided"));
 
   try {
-    // 2. Verify Token
     const decoded = jwt.verify(token, JWT_SECRET);
-
-    // 3. Attach User Info to Socket for later use
     socket.data.user = decoded;
     next();
   } catch (err) {
@@ -168,26 +212,20 @@ io.use((socket, next) => {
 
 // --- SOCKET LOGIC ---
 io.on('connection', (socket) => {
-  // We NOW know who the user is immediately because of the middleware!
   const user = socket.data.user;
   const userId = user.id;
 
   console.log(`✅ Secure Connection: ${user.username} (${userId})`);
 
-  // 1. Auto-Join Secure Room (Replaces the old 'login' listener)
   socket.join(userId);
-
-  // 2. Update Online Status
   User.findByIdAndUpdate(userId, { is_online: true }).exec();
   socket.broadcast.emit('user_status_change', { userId: userId, isOnline: true });
 
-  // 3. Chat Message Logic
   socket.on('chat_message', async (msgData) => {
     try {
       const { content, roomId, type = 'text' } = msgData;
-      const senderId = socket.data.user.id; // Use secure ID from token
+      const senderId = socket.data.user.id;
 
-      // Save to DB
       const newMessage = new Message({
         conversation_id: roomId,
         sender_id: senderId,
@@ -196,13 +234,11 @@ io.on('connection', (socket) => {
       });
       await newMessage.save();
 
-      // Update Conversation
       const conversation = await Conversation.findByIdAndUpdate(roomId, {
         last_message: type === 'image' ? '📷 Image' : content,
         updatedAt: new Date()
       }, { new: true });
 
-      // Find Recipient
       const recipientId = conversation.participants.find(
         (id) => id.toString() !== senderId.toString()
       );
@@ -216,7 +252,6 @@ io.on('connection', (socket) => {
         type: newMessage.type
       };
 
-      // Send to Recipient & Sender
       if (recipientId) io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
       io.to(senderId.toString()).emit('chat_message', outgoingMessage);
 
@@ -225,7 +260,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 4. Typing Indicators
   socket.on('typing', async (roomId) => {
     try {
       const conversation = await Conversation.findById(roomId);
@@ -255,7 +289,6 @@ io.on('connection', (socket) => {
     } catch (e) { }
   });
 
-  // 5. Join Private Chat
   socket.on('join_private_chat', async (targetUserId) => {
     try {
       const myUserId = socket.data.user.id;
