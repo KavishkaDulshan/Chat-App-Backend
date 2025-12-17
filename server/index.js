@@ -1,4 +1,4 @@
-//V10
+//V13 - Secure Socket Implementation
 
 const express = require('express');
 const http = require('http');
@@ -9,6 +9,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
+
+require('dotenv').config();
 
 // Models
 const User = require('./models/User');
@@ -23,17 +25,17 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/chat-app';
-const JWT_SECRET = 'my_super_secret_key_123';
+const mongoUri = process.env.MONGO_URI || 'mongodb://mongo:27017/chat-app';
+const JWT_SECRET = process.env.JWT_SECRET;
 
-// 1. CONFIGURE CLOUDINARY (Replace with YOUR keys)
+// 1. CONFIGURE CLOUDINARY
 cloudinary.config({
-  cloud_name: 'enter here',
-  api_key: 'enter here',
-  api_secret: 'enter here'
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// 2. CONFIGURE MULTER (Temporary Memory Storage)
+// 2. CONFIGURE MULTER
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
@@ -70,7 +72,8 @@ app.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
+    // Token expires in 24 hours
+    const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
 
     res.json({
       token,
@@ -81,7 +84,6 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// SEARCH USER
 app.get('/search', async (req, res) => {
   try {
     const { username } = req.query;
@@ -96,7 +98,6 @@ app.get('/search', async (req, res) => {
   }
 });
 
-// GET INBOX
 app.get('/conversations/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -119,12 +120,10 @@ app.get('/conversations/:userId', async (req, res) => {
   }
 });
 
-// --- UPLOAD IMAGE ROUTE ---
 app.post('/upload', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Upload to Cloudinary using the buffer
     const result = await new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         { folder: "chat_app_uploads" },
@@ -136,7 +135,6 @@ app.post('/upload', upload.single('image'), async (req, res) => {
       uploadStream.end(req.file.buffer);
     });
 
-    // Return the URL to the frontend
     res.json({ url: result.secure_url });
   } catch (err) {
     console.error("Upload Error:", err);
@@ -144,42 +142,52 @@ app.post('/upload', upload.single('image'), async (req, res) => {
   }
 });
 
+// ==========================================
+// 🔒 SECURITY GATE: SOCKET MIDDLEWARE
+// ==========================================
+// This runs BEFORE the connection is fully established
+io.use((socket, next) => {
+  // 1. Get Token from the Client's Handshake
+  const token = socket.handshake.auth.token;
+
+  if (!token) {
+    return next(new Error("Authentication error: No Token Provided"));
+  }
+
+  try {
+    // 2. Verify Token
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // 3. Attach User Info to Socket for later use
+    socket.data.user = decoded;
+    next();
+  } catch (err) {
+    return next(new Error("Authentication error: Invalid Token"));
+  }
+});
+
 // --- SOCKET LOGIC ---
-
 io.on('connection', (socket) => {
-  console.log('⚡ Connection attempt:', socket.id);
+  // We NOW know who the user is immediately because of the middleware!
+  const user = socket.data.user;
+  const userId = user.id;
 
-  // 1. LOGIN (Join Personal Room)
-  socket.on('login', async (username) => {
-    try {
-      const user = await User.findOne({ username });
-      if (user) {
-        user.is_online = true;
-        await user.save();
-        socket.data.user = user;
+  console.log(`✅ Secure Connection: ${user.username} (${userId})`);
 
-        // CRITICAL FIX: Join the User ID room for direct delivery
-        socket.join(user._id.toString());
+  // 1. Auto-Join Secure Room (Replaces the old 'login' listener)
+  socket.join(userId);
 
-        socket.emit('login_success', user);
-        socket.broadcast.emit('user_status_change', { userId: user._id, isOnline: true });
-        console.log(`✅ User ${username} joined Personal Room: ${user._id}`);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  });
+  // 2. Update Online Status
+  User.findByIdAndUpdate(userId, { is_online: true }).exec();
+  socket.broadcast.emit('user_status_change', { userId: userId, isOnline: true });
 
-  // 2. CHAT MESSAGE (Deliver to Specific Recipient)
-  // INSIDE io.on('connection') ...
-
-  // 2. CHAT MESSAGE (Fixed: Now defines recipientId)
+  // 3. Chat Message Logic
   socket.on('chat_message', async (msgData) => {
     try {
       const { content, roomId, type = 'text' } = msgData;
-      const senderId = socket.data.user._id;
+      const senderId = socket.data.user.id; // Use secure ID from token
 
-      // 1. Save to DB
+      // Save to DB
       const newMessage = new Message({
         conversation_id: roomId,
         sender_id: senderId,
@@ -188,14 +196,13 @@ io.on('connection', (socket) => {
       });
       await newMessage.save();
 
-      // 2. Update Conversation & FIND RECIPIENT
-      // We use { new: true } to get the updated document if needed
+      // Update Conversation
       const conversation = await Conversation.findByIdAndUpdate(roomId, {
         last_message: type === 'image' ? '📷 Image' : content,
         updatedAt: new Date()
       }, { new: true });
 
-      // FIX: This Logic was missing! We must find who to send it to.
+      // Find Recipient
       const recipientId = conversation.participants.find(
         (id) => id.toString() !== senderId.toString()
       );
@@ -209,10 +216,8 @@ io.on('connection', (socket) => {
         type: newMessage.type
       };
 
-      // 3. Emit to Recipient (if online) and Sender
-      if (recipientId) {
-        io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
-      }
+      // Send to Recipient & Sender
+      if (recipientId) io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
       io.to(senderId.toString()).emit('chat_message', outgoingMessage);
 
     } catch (err) {
@@ -220,13 +225,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 3. TYPING (Deliver to Specific Recipient)
+  // 4. Typing Indicators
   socket.on('typing', async (roomId) => {
     try {
       const conversation = await Conversation.findById(roomId);
       if (!conversation) return;
       const recipientId = conversation.participants.find(
-        (id) => id.toString() !== socket.data.user._id.toString()
+        (id) => id.toString() !== socket.data.user.id
       );
       if (recipientId) {
         io.to(recipientId.toString()).emit('display_typing', {
@@ -242,7 +247,7 @@ io.on('connection', (socket) => {
       const conversation = await Conversation.findById(roomId);
       if (!conversation) return;
       const recipientId = conversation.participants.find(
-        (id) => id.toString() !== socket.data.user._id.toString()
+        (id) => id.toString() !== socket.data.user.id
       );
       if (recipientId) {
         io.to(recipientId.toString()).emit('hide_typing', { roomId });
@@ -250,11 +255,10 @@ io.on('connection', (socket) => {
     } catch (e) { }
   });
 
-  // 4. JOIN PRIVATE CHAT (Updated History Logic)
+  // 5. Join Private Chat
   socket.on('join_private_chat', async (targetUserId) => {
     try {
-      const myUserId = socket.data.user._id;
-
+      const myUserId = socket.data.user.id;
       let conversation = await Conversation.findOne({
         participants: { $all: [myUserId, targetUserId] }
       });
@@ -267,17 +271,10 @@ io.on('connection', (socket) => {
         await conversation.save();
       }
 
-      // --- FIX STARTS HERE ---
-
-      // 1. Get the NEWEST 50 messages
       const rawMessages = await Message.find({ conversation_id: conversation._id })
         .sort({ createdAt: -1 })
         .limit(50);
-
-      // 2. Reverse them so they appear chronologically (Old -> New) in the chat
       const messages = rawMessages.reverse();
-
-      // --- FIX ENDS HERE ---
 
       const history = messages.map(m => ({
         content: m.content,
@@ -285,16 +282,11 @@ io.on('connection', (socket) => {
         sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : 'Partner',
         timestamp: m.createdAt,
         roomId: conversation._id,
-        type: m.type || 'text' // <--- CRITICAL FIX: Send the type (image/text) to the client
+        type: m.type || 'text'
       }));
 
-      // Join the room (still useful for context)
       socket.join(conversation._id.toString());
-
-      socket.emit('private_chat_ready', {
-        roomId: conversation._id,
-        history: history
-      });
+      socket.emit('private_chat_ready', { roomId: conversation._id, history: history });
 
     } catch (err) {
       console.error(err);
@@ -302,16 +294,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    if (socket.data.user) {
-      await User.findByIdAndUpdate(socket.data.user._id, { is_online: false });
-      io.emit('user_status_change', { userId: socket.data.user._id, isOnline: false });
-    }
-  });
-
-  // Keep get_users for legacy support if needed
-  socket.on('get_users', async () => {
-    const users = await User.find({ _id: { $ne: socket.data.user._id } }).select('-password');
-    socket.emit('users_list', users);
+    await User.findByIdAndUpdate(userId, { is_online: false });
+    io.emit('user_status_change', { userId: userId, isOnline: false });
+    console.log(`❌ User Disconnected: ${user.username}`);
   });
 });
 

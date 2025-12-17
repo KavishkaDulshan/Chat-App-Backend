@@ -1,30 +1,27 @@
 version: '3.8'
 
 services:
-  # Service 1: MongoDB
   mongo:
     image: mongo:latest
     container_name: chat-mongo
     restart: always
     ports:
-      - "27017:27017" # Allows you to connect via Compass on Windows
+      - "27017:27017"
     volumes:
-      - mongo-data:/data/db # Saves data even if you restart Docker
+      - mongo-data:/data/db
 
-  # Service 2: Node.js Backend
   backend:
     build: ./server
     container_name: chat-server
     ports:
       - "3000:3000"
-    environment:
-      - PORT=3000
-      # CRITICAL: We use 'mongo' as the host name because that is the service name above
-      - MONGO_URI=mongodb://mongo:27017/chat-app
+    # FIX: Point to the file path, do not list variables here
+    env_file:
+      - ./server/.env
     depends_on:
-      - mongo # Waits for mongo to start
+      - mongo
     volumes:
-      - ./server:/app # Syncs your code changes instantly
+      - ./server:/app
       - /app/node_modules
 
 volumes:
