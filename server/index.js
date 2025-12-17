@@ -207,7 +207,7 @@ io.on('connection', (socket) => {
     } catch (e) { }
   });
 
-  // 4. JOIN PRIVATE CHAT (Setup Room ID)
+  // 4. JOIN PRIVATE CHAT (Updated History Logic)
   socket.on('join_private_chat', async (targetUserId) => {
     try {
       const myUserId = socket.data.user._id;
@@ -224,10 +224,17 @@ io.on('connection', (socket) => {
         await conversation.save();
       }
 
-      // Load History
-      const messages = await Message.find({ conversation_id: conversation._id })
-        .sort({ createdAt: 1 })
+      // --- FIX STARTS HERE ---
+
+      // 1. Get the NEWEST 50 messages (Sort Descending: -1)
+      const rawMessages = await Message.find({ conversation_id: conversation._id })
+        .sort({ createdAt: -1 })
         .limit(50);
+
+      // 2. Reverse them so they appear chronologically (Old -> New) in the chat
+      const messages = rawMessages.reverse();
+
+      // --- FIX ENDS HERE ---
 
       const history = messages.map(m => ({
         content: m.content,
@@ -237,7 +244,7 @@ io.on('connection', (socket) => {
         roomId: conversation._id
       }));
 
-      // We still join the room just for context, though we use UserID for delivery now
+      // Join the room (still useful for context)
       socket.join(conversation._id.toString());
 
       socket.emit('private_chat_ready', {
