@@ -5,9 +5,10 @@ const MessageSchema = new mongoose.Schema({
     sender_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     content: { type: String, required: true },
     type: { type: String, enum: ['text', 'image'], default: 'text' },
+    isDeleted: { type: Boolean, default: false },
 
-    // NEW FIELD: Tracks if a message is deleted
-    isDeleted: { type: Boolean, default: false }
+    // NEW: Status Field
+    status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', MessageSchema);
