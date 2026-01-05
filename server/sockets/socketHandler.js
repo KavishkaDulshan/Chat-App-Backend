@@ -2,15 +2,15 @@ const User = require('../models/User');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { encrypt, decrypt } = require('../utils/crypto');
-const socketAuth = require('../middleware/socketAuth'); // <--- Import Middleware
+const socketAuth = require('../middleware/socketAuth');
 
 module.exports = (io) => {
-    // 1. USE MIDDLEWARE (The logic is now in the middleware folder)
+    // 1. USE MIDDLEWARE
     io.use(socketAuth);
 
     // 2. Connection Handler
     io.on('connection', (socket) => {
-        const user = socket.data.user;
+        const user = socket.data.user; // Accessed via socket.data (Correct)
         const userId = user.id;
 
         console.log(`✅ Secure Connection: ${user.username}`);
@@ -30,61 +30,66 @@ module.exports = (io) => {
                     conversation_id: roomId,
                     sender_id: senderId,
                     content: encryptedContent,
-                    type: type
+                    type: type,
+                    isDeleted: false // Default
                 });
                 await newMessage.save();
 
                 const conversation = await Conversation.findByIdAndUpdate(roomId, {
                     last_message: type === 'image' ? '📷 Image' : encryptedContent,
-                    updatedAt: new Date()
-                }, { new: true });
+                    updatedAt: Date.now()
+                });
 
-                const outgoingMessage = {
+                // Send back decrypted data to everyone in the room
+                io.to(roomId).emit('chat_message', {
+                    _id: newMessage._id, // Important for deletion
                     content: content,
-                    sender_id: newMessage.sender_id,
-                    sender_name: socket.data.user.username,
+                    sender_id: senderId,
+                    sender_name: user.username,
                     timestamp: newMessage.createdAt,
                     roomId: roomId,
-                    type: newMessage.type
-                };
-
-                const recipientId = conversation.participants.find(id => id.toString() !== senderId.toString());
-                if (recipientId) io.to(recipientId.toString()).emit('chat_message', outgoingMessage);
-                io.to(senderId.toString()).emit('chat_message', outgoingMessage);
+                    type: type,
+                    isDeleted: false
+                });
 
             } catch (err) {
-                console.error('Message Error:', err);
+                console.error(err);
             }
         });
 
-        // JOIN PRIVATE CHAT
-        socket.on('join_private_chat', async (targetUserId) => {
+        // JOIN PRIVATE CHAT (Load History)
+        socket.on('join_private_chat', async (otherUserId) => {
             try {
                 const myUserId = socket.data.user.id;
+
                 let conversation = await Conversation.findOne({
-                    participants: { $all: [myUserId, targetUserId] }
+                    participants: { $all: [myUserId, otherUserId] }
                 });
 
                 if (!conversation) {
                     conversation = new Conversation({
-                        participants: [myUserId, targetUserId],
+                        participants: [myUserId, otherUserId],
                         last_message: 'Start of conversation'
                     });
                     await conversation.save();
                 }
 
+                // Load last 50 messages
                 const rawMessages = await Message.find({ conversation_id: conversation._id })
                     .sort({ createdAt: -1 })
                     .limit(50);
                 const messages = rawMessages.reverse();
 
+                // Decrypt history before sending
                 const history = messages.map(m => ({
-                    content: decrypt(m.content),
+                    _id: m._id, // Include ID for deletion
+                    content: m.isDeleted ? "This message was deleted" : decrypt(m.content),
                     sender_id: m.sender_id,
                     sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : 'Partner',
                     timestamp: m.createdAt,
                     roomId: conversation._id,
-                    type: m.type || 'text'
+                    type: m.type || 'text',
+                    isDeleted: m.isDeleted || false // Send delete status
                 }));
 
                 socket.join(conversation._id.toString());
@@ -92,6 +97,27 @@ module.exports = (io) => {
 
             } catch (err) {
                 console.error(err);
+            }
+        });
+
+        // === NEW: DELETE MESSAGE HANDLER ===
+        socket.on('message:delete', async ({ messageId, roomId }) => {
+            try {
+                const msg = await Message.findById(messageId);
+                if (!msg) return;
+
+                // Security: Only sender can delete
+                if (msg.sender_id.toString() !== socket.data.user.id) return;
+
+                // Soft Delete
+                msg.isDeleted = true;
+                await msg.save();
+
+                // Broadcast delete event to everyone in the room
+                io.to(roomId).emit('message:deleted', messageId);
+
+            } catch (err) {
+                console.error("Delete Error:", err);
             }
         });
 
