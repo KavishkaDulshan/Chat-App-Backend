@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
@@ -19,12 +20,29 @@ module.exports = (io) => {
         // 1. CHAT MESSAGE
         socket.on('chat_message', async (msgData) => {
             try {
-                const { content, roomId, type = 'text' } = msgData;
+                let { content, roomId, type = 'text' } = msgData;
                 const senderId = socket.data.user.id;
+
+                // === CRITICAL FIX: Resolve Composite ID to Real ObjectId ===
+                // If roomId is NOT a valid MongoID (e.g. it's "user1_user2"), we resolve it.
+                if (!mongoose.Types.ObjectId.isValid(roomId)) {
+                    const parts = roomId.split('_');
+                    if (parts.length === 2) {
+                        // Find the real conversation for these users
+                        let conv = await Conversation.findOne({ participants: { $all: parts } });
+                        if (!conv) {
+                            // Create if doesn't exist
+                            conv = new Conversation({ participants: parts, last_message: 'Start' });
+                            await conv.save();
+                        }
+                        roomId = conv._id.toString(); // SWAP to real ID
+                    }
+                }
+
                 const encryptedContent = encrypt(content);
 
                 const newMessage = new Message({
-                    conversation_id: roomId,
+                    conversation_id: roomId, // Now using Valid ObjectId
                     sender_id: senderId,
                     content: encryptedContent,
                     type: type,
@@ -37,69 +55,46 @@ module.exports = (io) => {
                     updatedAt: Date.now()
                 });
 
+                // Send back with the REAL roomId so frontend can update
                 io.to(roomId).emit('chat_message', {
                     _id: newMessage._id,
                     content: content,
                     sender_id: senderId,
                     sender_name: user.username,
                     timestamp: newMessage.createdAt,
-                    roomId: roomId,
+                    roomId: roomId, // Send real ID
                     type: type,
                     isDeleted: false,
                     status: 'sent'
                 });
 
-            } catch (err) { console.error(err); }
+            } catch (err) { console.error("Message Error:", err); }
         });
 
-        // 2. MARK AS DELIVERED
-        socket.on('message:delivered', async ({ messageId, roomId }) => {
-            try {
-                const msg = await Message.findById(messageId);
-                if (msg && msg.status === 'sent') {
-                    msg.status = 'delivered';
-                    await msg.save();
-                    io.to(roomId).emit('message:status_update', {
-                        messageId,
-                        status: 'delivered',
-                        roomId
-                    });
-                }
-            } catch (err) { console.error(err); }
-        });
-
-        // 3. MARK AS READ (The Fix is Here)
-        socket.on('conversation:read', async ({ roomId }) => {
-            try {
-                const myUserId = socket.data.user.id;
-
-                // Mark all messages from the PARTNER as read
-                await Message.updateMany(
-                    { conversation_id: roomId, sender_id: { $ne: myUserId }, status: { $ne: 'read' } },
-                    { $set: { status: 'read' } }
-                );
-
-                // Notify Everyone 
-                // FIX: Send 'readerId' so the sender knows WHO read it
-                io.to(roomId).emit('conversation:read_ack', {
-                    roomId,
-                    readerId: myUserId
-                });
-            } catch (err) { console.error(err); }
-        });
-
-        // 4. LOAD HISTORY
+        // 2. JOIN PRIVATE CHAT (Loads History)
         socket.on('join_private_chat', async (otherUserId) => {
             try {
                 const myUserId = socket.data.user.id;
-                let conversation = await Conversation.findOne({ participants: { $all: [myUserId, otherUserId] } });
+
+                // Find or Create Conversation
+                let conversation = await Conversation.findOne({
+                    participants: { $all: [myUserId, otherUserId] }
+                });
 
                 if (!conversation) {
-                    conversation = new Conversation({ participants: [myUserId, otherUserId], last_message: 'Start of conversation' });
+                    conversation = new Conversation({
+                        participants: [myUserId, otherUserId],
+                        last_message: 'Start of conversation'
+                    });
                     await conversation.save();
                 }
 
-                const rawMessages = await Message.find({ conversation_id: conversation._id }).sort({ createdAt: -1 }).limit(50);
+                const roomId = conversation._id.toString();
+
+                // Load History
+                const rawMessages = await Message.find({ conversation_id: roomId })
+                    .sort({ createdAt: -1 })
+                    .limit(50);
                 const messages = rawMessages.reverse();
 
                 const history = messages.map(m => ({
@@ -108,18 +103,34 @@ module.exports = (io) => {
                     sender_id: m.sender_id,
                     sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : 'Partner',
                     timestamp: m.createdAt,
-                    roomId: conversation._id,
+                    roomId: roomId,
                     type: m.type || 'text',
                     isDeleted: m.isDeleted,
                     status: m.status
                 }));
 
-                socket.join(conversation._id.toString());
-                socket.emit('private_chat_ready', { roomId: conversation._id, history: history });
+                // Join the Real Room ID
+                socket.join(roomId);
+
+                // Send Ready Event
+                socket.emit('private_chat_ready', { roomId: roomId, history: history });
+
+            } catch (err) { console.error("Join Chat Error:", err); }
+        });
+
+        // 3. READ RECEIPTS & DELETE (Standard Listeners)
+        socket.on('conversation:read', async ({ roomId }) => {
+            if (!mongoose.Types.ObjectId.isValid(roomId)) return; // Ignore invalid IDs
+            try {
+                const myUserId = socket.data.user.id;
+                await Message.updateMany(
+                    { conversation_id: roomId, sender_id: { $ne: myUserId }, status: { $ne: 'read' } },
+                    { $set: { status: 'read' } }
+                );
+                io.to(roomId).emit('conversation:read_ack', { roomId, readerId: myUserId });
             } catch (err) { console.error(err); }
         });
 
-        // DELETE HANDLER
         socket.on('message:delete', async ({ messageId, roomId }) => {
             try {
                 const msg = await Message.findById(messageId);
@@ -130,6 +141,17 @@ module.exports = (io) => {
             } catch (err) { console.error(err); }
         });
 
+        socket.on('message:delivered', async ({ messageId, roomId }) => {
+            try {
+                const msg = await Message.findById(messageId);
+                if (msg && msg.status === 'sent') {
+                    msg.status = 'delivered';
+                    await msg.save();
+                    io.to(roomId).emit('message:status_update', { messageId, status: 'delivered', roomId });
+                }
+            } catch (err) { console.error(err); }
+        });
+
         socket.on('typing', (roomId) => socket.broadcast.to(roomId).emit('display_typing', { username: socket.data.user.username, roomId }));
         socket.on('stop_typing', (roomId) => socket.broadcast.to(roomId).emit('hide_typing', { roomId }));
 
@@ -137,7 +159,6 @@ module.exports = (io) => {
             await User.findByIdAndUpdate(userId, { is_online: false });
             io.emit('user_status_change', { userId: userId, isOnline: false });
             console.log(`❌ Disconnected: ${user.username}`);
-
         });
     });
 };
