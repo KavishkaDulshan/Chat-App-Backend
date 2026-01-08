@@ -8,12 +8,10 @@ const socketAuth = require('../middleware/socketAuth');
 // Helper: Find people who have chatted with this user
 async function getActiveChatPartners(userId) {
     try {
-        // 1. Find all conversations where this user is a participant
         const conversations = await Conversation.find({
             participants: userId
         }).select('participants');
 
-        // 2. Extract unique IDs of the OTHER participants
         const partners = new Set();
         conversations.forEach(conv => {
             conv.participants.forEach(p => {
@@ -38,15 +36,13 @@ module.exports = (io) => {
         const user = socket.data.user;
         const userId = user.id;
 
-        // [NEW CODE]
         console.log(`✅ Secure Connection: ${user.username}`);
-        socket.join(userId);
+        socket.join(userId); // REQUIRED for targeted messages
         User.findByIdAndUpdate(userId, { is_online: true }).exec();
 
-        // Notify only relevant people
+        // Notify partners
         const onlinePartners = await getActiveChatPartners(userId);
         onlinePartners.forEach(partnerId => {
-            // Emit specifically to the partner's room (partnerId)
             io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: true });
         });
 
@@ -56,26 +52,21 @@ module.exports = (io) => {
                 let { content, roomId, type = 'text' } = msgData;
                 const senderId = socket.data.user.id;
 
-                // === CRITICAL FIX: Resolve Composite ID to Real ObjectId ===
-                // If roomId is NOT a valid MongoID (e.g. it's "user1_user2"), we resolve it.
                 if (!mongoose.Types.ObjectId.isValid(roomId)) {
                     const parts = roomId.split('_');
                     if (parts.length === 2) {
-                        // Find the real conversation for these users
                         let conv = await Conversation.findOne({ participants: { $all: parts } });
                         if (!conv) {
-                            // Create if doesn't exist
                             conv = new Conversation({ participants: parts, last_message: 'Start' });
                             await conv.save();
                         }
-                        roomId = conv._id.toString(); // SWAP to real ID
+                        roomId = conv._id.toString();
                     }
                 }
 
                 const encryptedContent = encrypt(content);
-
                 const newMessage = new Message({
-                    conversation_id: roomId, // Now using Valid ObjectId
+                    conversation_id: roomId,
                     sender_id: senderId,
                     content: encryptedContent,
                     type: type,
@@ -83,33 +74,37 @@ module.exports = (io) => {
                 });
                 await newMessage.save();
 
-                await Conversation.findByIdAndUpdate(roomId, {
+                const conversation = await Conversation.findByIdAndUpdate(roomId, {
                     last_message: type === 'image' ? '📷 Image' : encryptedContent,
                     updatedAt: Date.now()
-                });
+                }, { new: true });
 
-                // Send back with the REAL roomId so frontend can update
-                io.to(roomId).emit('chat_message', {
+                const payload = {
                     _id: newMessage._id,
                     content: content,
                     sender_id: senderId,
                     sender_name: user.username,
                     timestamp: newMessage.createdAt,
-                    roomId: roomId, // Send real ID
+                    roomId: roomId,
                     type: type,
                     isDeleted: false,
                     status: 'sent'
-                });
+                };
+
+                // TARGETED EMIT ONLY (Loop through participants)
+                if (conversation && conversation.participants) {
+                    conversation.participants.forEach(participantId => {
+                        io.to(participantId.toString()).emit('chat_message', payload);
+                    });
+                }
 
             } catch (err) { console.error("Message Error:", err); }
         });
 
-        // 2. JOIN PRIVATE CHAT (Loads History)
+        // 2. JOIN PRIVATE CHAT
         socket.on('join_private_chat', async (otherUserId) => {
             try {
                 const myUserId = socket.data.user.id;
-
-                // Find or Create Conversation
                 let conversation = await Conversation.findOne({
                     participants: { $all: [myUserId, otherUserId] }
                 });
@@ -123,8 +118,6 @@ module.exports = (io) => {
                 }
 
                 const roomId = conversation._id.toString();
-
-                // Load History
                 const rawMessages = await Message.find({ conversation_id: roomId })
                     .sort({ createdAt: -1 })
                     .limit(50);
@@ -142,18 +135,15 @@ module.exports = (io) => {
                     status: m.status
                 }));
 
-                // Join the Real Room ID
-                socket.join(roomId);
-
-                // Send Ready Event
+                socket.join(roomId); // Only needed for read receipts now
                 socket.emit('private_chat_ready', { roomId: roomId, history: history });
 
             } catch (err) { console.error("Join Chat Error:", err); }
         });
 
-        // 3. READ RECEIPTS & DELETE (Standard Listeners)
+        // 3. READ RECEIPTS & DELETE
         socket.on('conversation:read', async ({ roomId }) => {
-            if (!mongoose.Types.ObjectId.isValid(roomId)) return; // Ignore invalid IDs
+            if (!mongoose.Types.ObjectId.isValid(roomId)) return;
             try {
                 const myUserId = socket.data.user.id;
                 await Message.updateMany(
@@ -188,16 +178,12 @@ module.exports = (io) => {
         socket.on('typing', (roomId) => socket.broadcast.to(roomId).emit('display_typing', { username: socket.data.user.username, roomId }));
         socket.on('stop_typing', (roomId) => socket.broadcast.to(roomId).emit('hide_typing', { roomId }));
 
-        // [NEW CODE]
         socket.on('disconnect', async () => {
             await User.findByIdAndUpdate(userId, { is_online: false });
-
-            // Notify only relevant people
             const offlinePartners = await getActiveChatPartners(userId);
             offlinePartners.forEach(partnerId => {
                 io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: false });
             });
-
             console.log(`❌ Disconnected: ${user.username}`);
         });
     });
