@@ -5,17 +5,50 @@ const Conversation = require('../models/Conversation');
 const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
 
+// Helper: Find people who have chatted with this user
+async function getActiveChatPartners(userId) {
+    try {
+        // 1. Find all conversations where this user is a participant
+        const conversations = await Conversation.find({
+            participants: userId
+        }).select('participants');
+
+        // 2. Extract unique IDs of the OTHER participants
+        const partners = new Set();
+        conversations.forEach(conv => {
+            conv.participants.forEach(p => {
+                const partnerId = p.toString();
+                if (partnerId !== userId.toString()) {
+                    partners.add(partnerId);
+                }
+            });
+        });
+
+        return Array.from(partners);
+    } catch (err) {
+        console.error("Error finding chat partners:", err);
+        return [];
+    }
+}
+
 module.exports = (io) => {
     io.use(socketAuth);
 
-    io.on('connection', (socket) => {
+    io.on('connection', async (socket) => {
         const user = socket.data.user;
         const userId = user.id;
 
+        // [NEW CODE]
         console.log(`✅ Secure Connection: ${user.username}`);
         socket.join(userId);
         User.findByIdAndUpdate(userId, { is_online: true }).exec();
-        socket.broadcast.emit('user_status_change', { userId: userId, isOnline: true });
+
+        // Notify only relevant people
+        const onlinePartners = await getActiveChatPartners(userId);
+        onlinePartners.forEach(partnerId => {
+            // Emit specifically to the partner's room (partnerId)
+            io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: true });
+        });
 
         // 1. CHAT MESSAGE
         socket.on('chat_message', async (msgData) => {
@@ -155,9 +188,16 @@ module.exports = (io) => {
         socket.on('typing', (roomId) => socket.broadcast.to(roomId).emit('display_typing', { username: socket.data.user.username, roomId }));
         socket.on('stop_typing', (roomId) => socket.broadcast.to(roomId).emit('hide_typing', { roomId }));
 
+        // [NEW CODE]
         socket.on('disconnect', async () => {
             await User.findByIdAndUpdate(userId, { is_online: false });
-            io.emit('user_status_change', { userId: userId, isOnline: false });
+
+            // Notify only relevant people
+            const offlinePartners = await getActiveChatPartners(userId);
+            offlinePartners.forEach(partnerId => {
+                io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: false });
+            });
+
             console.log(`❌ Disconnected: ${user.username}`);
         });
     });
