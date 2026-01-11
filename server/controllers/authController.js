@@ -56,3 +56,22 @@ exports.searchUser = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+exports.saveFcmToken = async (req, res) => {
+    try {
+        const { token } = req.body;
+        const userId = req.user.id; // Comes from auth middleware
+
+        if (!token) return res.status(400).json({ message: "Token required" });
+
+        // Add token to array using $addToSet (prevents duplicates)
+        await User.findByIdAndUpdate(userId, {
+            $addToSet: { fcm_tokens: token }
+        });
+
+        res.status(200).json({ message: "Token saved" });
+    } catch (err) {
+        console.error("Save Token Error:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};

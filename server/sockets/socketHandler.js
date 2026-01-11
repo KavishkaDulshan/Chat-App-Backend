@@ -4,6 +4,7 @@ const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
+const admin = require('../config/firebase'); // <--- NEW: Firebase Admin Import
 
 // Helper: Find people who have chatted with this user
 async function getActiveChatPartners(userId) {
@@ -91,10 +92,41 @@ module.exports = (io) => {
                     status: 'sent'
                 };
 
-                // TARGETED EMIT ONLY (Loop through participants)
+                // TARGETED EMIT + PUSH NOTIFICATION
                 if (conversation && conversation.participants) {
-                    conversation.participants.forEach(participantId => {
-                        io.to(participantId.toString()).emit('chat_message', payload);
+                    conversation.participants.forEach(async (participantId) => {
+                        const pidStr = participantId.toString();
+
+                        // 1. Send via Socket (Fast, Real-time)
+                        io.to(pidStr).emit('chat_message', payload);
+
+                        // 2. Check for Offline Push Notification
+                        if (pidStr !== senderId) {
+                            try {
+                                const recipient = await User.findById(participantId);
+
+                                // Logic: Only send if user is OFFLINE and has Tokens
+                                if (recipient && !recipient.is_online && recipient.fcm_tokens && recipient.fcm_tokens.length > 0) {
+                                    await admin.messaging().sendEachForMulticast({
+                                        tokens: recipient.fcm_tokens,
+                                        notification: {
+                                            title: `New Message from ${user.username}`,
+                                            body: "Tap to view message", // Privacy friendly body
+                                        },
+                                        // Data payload helps Flutter open the correct chat
+                                        data: {
+                                            click_action: "FLUTTER_NOTIFICATION_CLICK",
+                                            roomId: roomId,
+                                            senderId: senderId,
+                                            type: "chat_message"
+                                        }
+                                    });
+                                    console.log(`🔔 FCM Notification sent to ${recipient.username}`);
+                                }
+                            } catch (fcmError) {
+                                console.error("❌ FCM Error:", fcmError);
+                            }
+                        }
                     });
                 }
 

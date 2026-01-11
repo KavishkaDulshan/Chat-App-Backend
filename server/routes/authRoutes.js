@@ -1,16 +1,19 @@
 const express = require('express');
-const router = express.Router(); // <--- FIXED: Removed the extra '.express'
-const { register, login, searchUser } = require('../controllers/authController');
-const rateLimit = require('express-rate-limit');
+const router = express.Router();
 
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'Too many requests from this IP, please try again in 15 minutes'
-});
+// 1. Import Controller (Fixes: authController is not defined)
+const authController = require('../controllers/authController');
 
-router.post('/register', limiter, register);
-router.post('/login', limiter, login);
-router.get('/search', searchUser);
+// 2. Import Middleware (Fixes: authMiddleware is not defined)
+const authMiddleware = require('../middleware/authMiddleware');
+
+// --- Routes ---
+
+// Public Routes
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+
+// Protected Route for FCM (This is the one crashing)
+router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
 
 module.exports = router;
