@@ -7,7 +7,6 @@ const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 require('dotenv').config();
 
-// Imports
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
