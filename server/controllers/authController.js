@@ -75,3 +75,26 @@ exports.saveFcmToken = async (req, res) => {
         res.status(500).json({ message: "Server error" });
     }
 };
+
+exports.searchUser = async (req, res) => {
+    try {
+        const { username } = req.query;
+
+        if (!username) {
+            return res.status(400).json({ message: "Username query required" });
+        }
+
+        // Find user by exact match (or use regex for partial match if you prefer)
+        // We select only the fields we need (id, username) to protect privacy
+        const user = await User.findOne({ username: username }).select('_id username is_online');
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        res.status(200).json(user);
+    } catch (err) {
+        console.error("Search Error:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};

@@ -15,5 +15,6 @@ router.post('/login', authController.login);
 
 // Protected Route for FCM (This is the one crashing)
 router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
+router.get('/search', authMiddleware, authController.searchUser); // <--- ADD THIS LINE
 
 module.exports = router;
