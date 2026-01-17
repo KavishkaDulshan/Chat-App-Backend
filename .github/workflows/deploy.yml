@@ -1,0 +1,37 @@
+name: Deploy to Azure VM
+
+on:
+  push:
+    branches: [ "main" ]  # Triggers on push to main branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Deploy to Server via SSH
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.VM_HOST }}
+        username: ${{ secrets.VM_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 22
+        script: |
+          # 1. Stop the server just in case
+          echo "🚀 Starting Deployment..."
+
+          # 2. Go to the project folder
+          cd ~/Chat-App-Backend
+
+          # 3. Discard local changes (like the manual edits we made) to avoid conflict
+          git reset --hard
+
+          # 4. Pull the latest code from GitHub
+          git pull origin main
+
+          # 5. Rebuild and Restart Docker
+          echo "🐳 Rebuilding Docker Containers..."
+          sudo docker compose down
+          sudo docker compose up -d --build
+
+          echo "✅ Deployment Successful!"
