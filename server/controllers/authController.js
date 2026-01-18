@@ -1,6 +1,8 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const sendEmail = require('../utils/sendEmail'); // <--- Import this
+
 
 exports.register = async (req, res) => {
     try {
@@ -13,22 +15,81 @@ exports.register = async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const newUser = new User({ username, email, password: hashedPassword });
+        // Generate 6-digit OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpires = Date.now() + 10 * 60 * 1000; // 10 Minutes from now
+
+        const newUser = new User({
+            username,
+            email,
+            password: hashedPassword,
+            otp: otp,
+            otpExpires: otpExpires,
+            isVerified: false
+        });
         await newUser.save();
 
-        res.status(201).json({ message: "User created successfully" });
+        // Send Email (Non-blocking: we don't await strictly if we want speed, but good to ensure it sends)
+        await sendEmail(email, otp);
+
+        res.status(201).json({ message: "OTP sent to email. Please verify." });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
 
+// 2. NEW FUNCTION: VERIFY OTP
+exports.verifyOTP = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) return res.status(400).json({ error: "Email and OTP required" });
+
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(400).json({ error: "User not found" });
+
+        // Check if OTP matches and is not expired
+        if (user.otp !== otp) {
+            return res.status(400).json({ error: "Invalid OTP" });
+        }
+        if (user.otpExpires < Date.now()) {
+            return res.status(400).json({ error: "OTP has expired" });
+        }
+
+        // Success: Verify User & Clear OTP
+        user.isVerified = true;
+        user.otp = undefined;
+        user.otpExpires = undefined;
+        await user.save();
+
+        // Optional: Log them in immediately
+        const token = jwt.sign({ id: user._id, username: user.username }, process.env.JWT_SECRET, {
+            expiresIn: process.env.JWT_EXPIRES_IN || '30d'
+        });
+
+        res.json({ message: "Verification successful", token, user: { _id: user._id, username: user.username, email: user.email } });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// 3. MODIFIED LOGIN
 exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
+        // ... (Keep existing validation) ... 
         if (typeof email !== 'string' || typeof password !== 'string') return res.status(400).json({ error: "Invalid data format" });
 
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ error: "User not found" });
+
+        // --- NEW CHECK: IS VERIFIED? ---
+        if (!user.isVerified) {
+            // Optional: Resend OTP logic could go here
+            return res.status(400).json({ error: "Please verify your email first" });
+        }
+        // -------------------------------
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
@@ -42,6 +103,7 @@ exports.login = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
 
 exports.searchUser = async (req, res) => {
     try {
