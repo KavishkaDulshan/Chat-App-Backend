@@ -9,7 +9,10 @@ const UserSchema = new mongoose.Schema({
 
     isVerified: { type: Boolean, default: false }, // false by default
     otp: { type: String },                         // Stores the 6-digit code
-    otpExpires: { type: Date }
+    otpExpires: { type: Date },
+
+    profile_pic: { type: String, default: "" } // Stores Cloudinary URL
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);

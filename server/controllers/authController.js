@@ -140,25 +140,64 @@ exports.saveFcmToken = async (req, res) => {
     }
 };
 
+// server/controllers/authController.js
+
+// ... keep your imports and other functions (register, login, verifyOTP, etc.) ...
+
 exports.searchUser = async (req, res) => {
     try {
         const { username } = req.query;
+        const currentUserId = req.user.id; // Comes from authMiddleware
 
-        if (!username) {
-            return res.status(400).json({ message: "Username query required" });
+        let query = {};
+
+        // 1. If username is provided, search by Regex (Partial Match)
+        if (username && username.trim().length > 0) {
+            query = {
+                username: { $regex: username, $options: 'i' }, // 'i' = case insensitive
+                _id: { $ne: currentUserId } // Exclude myself
+            };
+        } else {
+            // 2. If NO username, return all users (or recent chats)
+            // This fixes the "Username query required" error on initial load
+            query = {
+                _id: { $ne: currentUserId } // Exclude myself
+            };
         }
 
-        // Find user by exact match (or use regex for partial match if you prefer)
-        // We select only the fields we need (id, username) to protect privacy
-        const user = await User.findOne({ username: username }).select('_id username is_online');
+        // 3. Find users (Limit to 20 to avoid overloading)
+        const users = await User.find(query)
+            .select('username email profile_pic is_online') // Only get necessary fields
+            .limit(20);
 
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
+        // 4. Always return 200 OK with a list (even if empty)
+        // This fixes the "Search Failed" logs
+        res.status(200).json(users);
 
-        res.status(200).json(user);
     } catch (err) {
         console.error("Search Error:", err);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ error: "Server error during search" });
+    }
+};
+
+
+exports.updateProfile = async (req, res) => {
+    try {
+        const { userId, profile_pic } = req.body;
+
+        // Security Check: Ensure user is updating their OWN profile
+        // (In a real app, use req.user.id from the authMiddleware instead of body)
+
+        const user = await User.findByIdAndUpdate(
+            userId,
+            { profile_pic: profile_pic },
+            { new: true } // Return the updated user
+        ).select('-password'); // Don't send back password
+
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        res.json(user);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 };

@@ -18,4 +18,6 @@ router.post('/verify-otp', authController.verifyOTP); // <--- ADD THIS LINE
 router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
 router.get('/search', authMiddleware, authController.searchUser); // <--- ADD THIS LINE
 
+// Add this line
+router.put('/update-profile', authMiddleware, authController.updateProfile);
 module.exports = router;

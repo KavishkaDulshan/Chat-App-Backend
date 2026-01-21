@@ -34,7 +34,7 @@ app.use(cors());
 
 // 3. API Routes
 app.use('/', authRoutes);      // /register, /login, /search
-app.use('/', chatRoutes);      // /conversations/:userId
+app.use('/chat', chatRoutes);  // <--- CHANGED: Added '/chat' prefix to match Frontend
 app.use('/', uploadRoutes);    // /upload
 
 // 4. Initialize Socket Logic

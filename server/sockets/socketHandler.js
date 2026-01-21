@@ -4,7 +4,7 @@ const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
-const admin = require('../config/firebase'); // <--- NEW: Firebase Admin Import
+const admin = require('../config/firebase');
 
 // Helper: Find people who have chatted with this user
 async function getActiveChatPartners(userId) {
@@ -38,10 +38,9 @@ module.exports = (io) => {
         const userId = user.id;
 
         console.log(`✅ Secure Connection: ${user.username}`);
-        socket.join(userId); // REQUIRED for targeted messages
+        socket.join(userId);
         User.findByIdAndUpdate(userId, { is_online: true }).exec();
 
-        // Notify partners
         const onlinePartners = await getActiveChatPartners(userId);
         onlinePartners.forEach(partnerId => {
             io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: true });
@@ -52,6 +51,10 @@ module.exports = (io) => {
             try {
                 let { content, roomId, type = 'text' } = msgData;
                 const senderId = socket.data.user.id;
+
+                // --- FIX 1: DEFINE SENDER ---
+                const sender = await User.findById(senderId).select('username profile_pic');
+                // ----------------------------
 
                 if (!mongoose.Types.ObjectId.isValid(roomId)) {
                     const parts = roomId.split('_');
@@ -84,7 +87,8 @@ module.exports = (io) => {
                     _id: newMessage._id,
                     content: content,
                     sender_id: senderId,
-                    sender_name: user.username,
+                    sender_name: sender.username,     // Use fetched sender
+                    sender_avatar: sender.profile_pic, // Use fetched sender
                     timestamp: newMessage.createdAt,
                     roomId: roomId,
                     type: type,
@@ -97,23 +101,19 @@ module.exports = (io) => {
                     conversation.participants.forEach(async (participantId) => {
                         const pidStr = participantId.toString();
 
-                        // 1. Send via Socket (Fast, Real-time)
                         io.to(pidStr).emit('chat_message', payload);
 
-                        // 2. Check for Offline Push Notification
                         if (pidStr !== senderId) {
                             try {
                                 const recipient = await User.findById(participantId);
 
-                                // Logic: Only send if user is OFFLINE and has Tokens
                                 if (recipient && !recipient.is_online && recipient.fcm_tokens && recipient.fcm_tokens.length > 0) {
                                     await admin.messaging().sendEachForMulticast({
                                         tokens: recipient.fcm_tokens,
                                         notification: {
-                                            title: `New Message from ${user.username}`,
-                                            body: "Tap to view message", // Privacy friendly body
+                                            title: `New Message from ${sender.username}`,
+                                            body: type === 'image' ? "Sent an image" : "Tap to view message",
                                         },
-                                        // Data payload helps Flutter open the correct chat
                                         data: {
                                             click_action: "FLUTTER_NOTIFICATION_CLICK",
                                             roomId: roomId,
@@ -121,7 +121,6 @@ module.exports = (io) => {
                                             type: "chat_message"
                                         }
                                     });
-                                    console.log(`🔔 FCM Notification sent to ${recipient.username}`);
                                 }
                             } catch (fcmError) {
                                 console.error("❌ FCM Error:", fcmError);
@@ -155,20 +154,25 @@ module.exports = (io) => {
                     .limit(50);
                 const messages = rawMessages.reverse();
 
-                const history = messages.map(m => ({
-                    _id: m._id,
-                    content: m.isDeleted ? "This message was deleted" : decrypt(m.content),
-                    sender_id: m.sender_id,
-                    sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : 'Partner',
-                    timestamp: m.createdAt,
-                    roomId: roomId,
-                    type: m.type || 'text',
-                    isDeleted: m.isDeleted,
-                    status: m.status
+                // Fetch sender details for avatar in history
+                const messagesWithDetails = await Promise.all(messages.map(async (m) => {
+                    const senderDetails = await User.findById(m.sender_id).select('username profile_pic');
+                    return {
+                        _id: m._id,
+                        content: m.isDeleted ? "This message was deleted" : decrypt(m.content),
+                        sender_id: m.sender_id,
+                        sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : (senderDetails?.username || 'Partner'),
+                        sender_avatar: senderDetails?.profile_pic || "", // Include Avatar
+                        timestamp: m.createdAt,
+                        roomId: roomId,
+                        type: m.type || 'text',
+                        isDeleted: m.isDeleted,
+                        status: m.status
+                    };
                 }));
 
-                socket.join(roomId); // Only needed for read receipts now
-                socket.emit('private_chat_ready', { roomId: roomId, history: history });
+                socket.join(roomId);
+                socket.emit('private_chat_ready', { roomId: roomId, history: messagesWithDetails });
 
             } catch (err) { console.error("Join Chat Error:", err); }
         });
