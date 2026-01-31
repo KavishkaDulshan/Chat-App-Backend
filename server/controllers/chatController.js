@@ -9,7 +9,7 @@ exports.getConversations = async (req, res) => {
 
         const populatedConversations = await Promise.all(conversations.map(async (conv) => {
             const otherUserId = conv.participants.find(id => id.toString() !== userId);
-            const otherUser = await User.findById(otherUserId).select('username email is_online');
+            const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic');
 
             // Decrypt Preview
             let preview = conv.last_message;
