@@ -1,5 +1,6 @@
 const Conversation = require('../models/Conversation');
 const User = require('../models/User');
+const Message = require('../models/Message'); // 1. Import Message Model
 const { decrypt } = require('../utils/crypto');
 
 exports.getConversations = async (req, res) => {
@@ -11,16 +12,34 @@ exports.getConversations = async (req, res) => {
             const otherUserId = conv.participants.find(id => id.toString() !== userId);
             const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic');
 
-            // Decrypt Preview
-            let preview = conv.last_message;
-            if (preview && !preview.includes('Start of conversation') && !preview.includes('📷 Image')) {
-                preview = decrypt(preview);
+            // 2. Fetch the actual latest message to check status
+            const lastMsgDoc = await Message.findOne({ conversation_id: conv._id })
+                .sort({ createdAt: -1 });
+
+            let preview = "Start of conversation";
+            let isDeleted = false;
+
+            if (lastMsgDoc) {
+                isDeleted = lastMsgDoc.isDeleted; // Get deleted status
+                preview = lastMsgDoc.content;
+
+                // Decrypt if it's a real message and not deleted
+                if (!isDeleted && preview && !preview.includes('📷 Image') && !preview.includes('Start of conversation')) {
+                    // Only attempt decrypt if it looks like encrypted text (no spaces usually) or based on your logic
+                    // Adding a safe check or try/catch is recommended
+                    try {
+                        preview = decrypt(preview);
+                    } catch (e) {
+                        // Keep original if decrypt fails (e.g. system message)
+                    }
+                }
             }
 
             return {
                 id: conv._id,
                 otherUser: otherUser,
                 lastMessage: preview,
+                lastMessageIsDeleted: isDeleted, // 3. Send the flag
                 updatedAt: conv.updatedAt
             };
         }));
