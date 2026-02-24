@@ -1,6 +1,6 @@
 const Conversation = require('../models/Conversation');
 const User = require('../models/User');
-const Message = require('../models/Message'); // 1. Import Message Model
+const Message = require('../models/Message');
 const { decrypt } = require('../utils/crypto');
 
 exports.getConversations = async (req, res) => {
@@ -11,6 +11,12 @@ exports.getConversations = async (req, res) => {
         const populatedConversations = await Promise.all(conversations.map(async (conv) => {
             const otherUserId = conv.participants.find(id => id.toString() !== userId);
             const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic');
+
+            // ✅ CRITICAL FIX: If the other user no longer exists, skip this conversation
+            // This prevents the frontend from crashing when it tries to read properties of a null user
+            if (!otherUser) {
+                return null;
+            }
 
             // 2. Fetch the actual latest message to check status
             const lastMsgDoc = await Message.findOne({ conversation_id: conv._id })
@@ -44,7 +50,10 @@ exports.getConversations = async (req, res) => {
             };
         }));
 
-        res.json(populatedConversations);
+        // ✅ CRITICAL FIX: Filter out the nulls (broken/ghost chats) from the final array
+        const validConversations = populatedConversations.filter(c => c !== null);
+
+        res.json(validConversations);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
