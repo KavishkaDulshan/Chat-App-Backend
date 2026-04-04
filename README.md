@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-```
-=======
->>>>>>> d956a99eb183703c8ee4a446b2c629821df338e2
 # BlinkChat: Real-Time Encrypted Cross-Platform Messaging App
 
 ## Overview
@@ -37,9 +33,6 @@ The project leverages a modern, decoupled architecture using the following techn
 * **CI/CD Pipeline:** GitHub Actions
 * **Hosting Environment:** Microsoft Azure Virtual Machine (Ubuntu)
 
----
-
-<<<<<<< HEAD
 ## System Architecture & Connectivity Flow
 
 The system is highly modular. The Flutter client communicates with the Node.js backend via two distinct channels: **REST APIs** for standard operations (authentication, profile updates, fetching history) and **WebSockets** for real-time bidirectional messaging. The backend interfaces with a containerized MongoDB instance to persist data.
@@ -90,12 +83,12 @@ graph TD
 ```
 
 =======
+
 ## System Architecture
 
 The system is highly modular. The Flutter client communicates with the Node.js backend via two distinct channels: **REST APIs** for standard operations (authentication, profile updates, fetching history) and **WebSockets** for real-time bidirectional messaging. The backend interfaces with a containerized MongoDB instance to persist data.
 
->>>>>>> d956a99eb183703c8ee4a446b2c629821df338e2
-### Component Integration Details
+#### Component Integration Details
 
 1. **Frontend to Backend (REST):** The Flutter app utilizes the `http` package to interact with Express endpoints (e.g., `/login`, `/register`, `/chat/conversations`). Upon successful login, the server issues a JWT, which the client securely stores using `flutter_secure_storage`.
 2. **Real-Time WebSocket Link:** The Flutter `socket_io_client` establishes a persistent connection with the backend, passing the JWT in the authentication headers. The backend verifies this token before granting socket access.
