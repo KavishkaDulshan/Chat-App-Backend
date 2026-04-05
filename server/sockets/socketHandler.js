@@ -6,6 +6,8 @@ const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
 const admin = require('../config/firebase');
 
+const isE2EEnvelope = (text) => typeof text === 'string' && text.startsWith('e2e:v1:');
+
 // Helper: Find people who have chatted with this user
 async function getActiveChatPartners(userId) {
     try {
@@ -68,18 +70,22 @@ module.exports = (io) => {
                     }
                 }
 
-                const encryptedContent = encrypt(content);
+                const shouldKeepCiphertext = type === 'text' && isE2EEnvelope(content);
+                const storedContent = shouldKeepCiphertext ? content : encrypt(content);
+
                 const newMessage = new Message({
                     conversation_id: roomId,
                     sender_id: senderId,
-                    content: encryptedContent,
+                    content: storedContent,
                     type: type,
                     status: 'sent'
                 });
                 await newMessage.save();
 
                 const conversation = await Conversation.findByIdAndUpdate(roomId, {
-                    last_message: type === 'image' ? '📷 Image' : encryptedContent,
+                    last_message: type === 'image'
+                        ? '📷 Image'
+                        : (shouldKeepCiphertext ? 'Encrypted message' : storedContent),
                     updatedAt: Date.now()
                 }, { new: true });
 
@@ -157,9 +163,19 @@ module.exports = (io) => {
                 // Fetch sender details for avatar in history
                 const messagesWithDetails = await Promise.all(messages.map(async (m) => {
                     const senderDetails = await User.findById(m.sender_id).select('username profile_pic');
+
+                    let resolvedContent = m.content;
+                    if (m.isDeleted) {
+                        resolvedContent = 'This message was deleted';
+                    } else if (m.type === 'text' && isE2EEnvelope(m.content)) {
+                        resolvedContent = m.content;
+                    } else {
+                        resolvedContent = decrypt(m.content);
+                    }
+
                     return {
                         _id: m._id,
-                        content: m.isDeleted ? "This message was deleted" : decrypt(m.content),
+                        content: resolvedContent,
                         sender_id: m.sender_id,
                         sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : (senderDetails?.username || 'Partner'),
                         sender_avatar: senderDetails?.profile_pic || "", // Include Avatar

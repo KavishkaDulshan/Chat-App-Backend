@@ -17,6 +17,8 @@ router.post('/verify-otp', authController.verifyOTP); // <--- ADD THIS LINE
 // Protected Route for FCM (This is the one crashing)
 router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
 router.get('/search', authMiddleware, authController.searchUser); // <--- ADD THIS LINE
+router.put('/e2e-key', authMiddleware, authController.updateE2EPublicKey);
+router.get('/users/:userId/e2e-key', authMiddleware, authController.getUserE2EPublicKey);
 
 // Add this line
 router.put('/update-profile', authMiddleware, authController.updateProfile);

@@ -67,7 +67,18 @@ exports.verifyOTP = async (req, res) => {
             expiresIn: process.env.JWT_EXPIRES_IN || '30d'
         });
 
-        res.json({ message: "Verification successful", token, user: { _id: user._id, username: user.username, email: user.email } });
+        res.json({
+            message: "Verification successful",
+            token,
+            user: {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                profile_pic: user.profile_pic,
+                e2e_public_key: user.e2e_public_key,
+                e2e_key_version: user.e2e_key_version
+            }
+        });
 
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -98,7 +109,17 @@ exports.login = async (req, res) => {
             expiresIn: process.env.JWT_EXPIRES_IN || '30d'
         });
 
-        res.json({ token, user: { _id: user._id, username: user.username, email: user.email } });
+        res.json({
+            token,
+            user: {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                profile_pic: user.profile_pic,
+                e2e_public_key: user.e2e_public_key,
+                e2e_key_version: user.e2e_key_version
+            }
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -167,7 +188,7 @@ exports.searchUser = async (req, res) => {
 
         // 3. Find users (Limit to 20 to avoid overloading)
         const users = await User.find(query)
-            .select('username email profile_pic is_online') // Only get necessary fields
+            .select('username email profile_pic is_online e2e_public_key e2e_key_version') // Only get necessary fields
             .limit(20);
 
         // 4. Always return 200 OK with a list (even if empty)
@@ -197,6 +218,53 @@ exports.updateProfile = async (req, res) => {
         if (!user) return res.status(404).json({ error: "User not found" });
 
         res.json(user);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.updateE2EPublicKey = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { publicKey, keyVersion } = req.body;
+
+        if (!publicKey || typeof publicKey !== 'string') {
+            return res.status(400).json({ error: 'publicKey is required' });
+        }
+
+        const user = await User.findByIdAndUpdate(
+            userId,
+            {
+                e2e_public_key: publicKey,
+                e2e_key_version: Number.isInteger(keyVersion) ? keyVersion : 1
+            },
+            { new: true }
+        ).select('_id e2e_public_key e2e_key_version');
+
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        res.status(200).json({
+            userId: user._id,
+            e2e_public_key: user.e2e_public_key,
+            e2e_key_version: user.e2e_key_version
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.getUserE2EPublicKey = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await User.findById(userId).select('_id e2e_public_key e2e_key_version');
+
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        res.status(200).json({
+            userId: user._id,
+            e2e_public_key: user.e2e_public_key || '',
+            e2e_key_version: user.e2e_key_version || 1
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

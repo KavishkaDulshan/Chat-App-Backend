@@ -3,6 +3,8 @@ const User = require('../models/User');
 const Message = require('../models/Message');
 const { decrypt } = require('../utils/crypto');
 
+const isE2EEnvelope = (text) => typeof text === 'string' && text.startsWith('e2e:v1:');
+
 exports.getConversations = async (req, res) => {
     try {
         const { userId } = req.params;
@@ -10,7 +12,7 @@ exports.getConversations = async (req, res) => {
 
         const populatedConversations = await Promise.all(conversations.map(async (conv) => {
             const otherUserId = conv.participants.find(id => id.toString() !== userId);
-            const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic');
+            const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic e2e_public_key e2e_key_version');
 
             // ✅ CRITICAL FIX: If the other user no longer exists, skip this conversation
             // This prevents the frontend from crashing when it tries to read properties of a null user
@@ -29,8 +31,12 @@ exports.getConversations = async (req, res) => {
                 isDeleted = lastMsgDoc.isDeleted; // Get deleted status
                 preview = lastMsgDoc.content;
 
+                if (!isDeleted && lastMsgDoc.type === 'text' && isE2EEnvelope(preview)) {
+                    preview = 'Encrypted message';
+                }
+
                 // Decrypt if it's a real message and not deleted
-                if (!isDeleted && preview && !preview.includes('📷 Image') && !preview.includes('Start of conversation')) {
+                if (!isDeleted && preview && !isE2EEnvelope(lastMsgDoc.content) && !preview.includes('📷 Image') && !preview.includes('Start of conversation')) {
                     // Only attempt decrypt if it looks like encrypted text (no spaces usually) or based on your logic
                     // Adding a safe check or try/catch is recommended
                     try {

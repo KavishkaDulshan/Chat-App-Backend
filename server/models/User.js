@@ -11,6 +11,10 @@ const UserSchema = new mongoose.Schema({
     otp: { type: String },                         // Stores the 6-digit code
     otpExpires: { type: Date },
 
+    // Public identity key used by clients for E2EE key agreement.
+    e2e_public_key: { type: String, default: '' },
+    e2e_key_version: { type: Number, default: 1 },
+
     profile_pic: { type: String, default: "" } // Stores Cloudinary URL
 
 }, { timestamps: true });
