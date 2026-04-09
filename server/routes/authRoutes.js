@@ -18,6 +18,7 @@ router.post('/verify-otp', authController.verifyOTP); // <--- ADD THIS LINE
 router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
 router.get('/search', authMiddleware, authController.searchUser); // <--- ADD THIS LINE
 router.put('/e2e-key', authMiddleware, authController.updateE2EPublicKey);
+router.get('/my-e2e-keys', authMiddleware, authController.getMyE2EKeys);
 router.get('/users/:userId/e2e-key', authMiddleware, authController.getUserE2EPublicKey);
 
 // Add this line

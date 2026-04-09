@@ -226,18 +226,25 @@ exports.updateProfile = async (req, res) => {
 exports.updateE2EPublicKey = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { publicKey, keyVersion } = req.body;
+        const { publicKey, privateKey, keyVersion } = req.body;
 
         if (!publicKey || typeof publicKey !== 'string') {
             return res.status(400).json({ error: 'publicKey is required' });
         }
 
+        const updateFields = {
+            e2e_public_key: publicKey,
+            e2e_key_version: Number.isInteger(keyVersion) ? keyVersion : 1
+        };
+
+        // Also store the private key if the client sends it (cross-device backup)
+        if (privateKey && typeof privateKey === 'string') {
+            updateFields.e2e_private_key = privateKey;
+        }
+
         const user = await User.findByIdAndUpdate(
             userId,
-            {
-                e2e_public_key: publicKey,
-                e2e_key_version: Number.isInteger(keyVersion) ? keyVersion : 1
-            },
+            updateFields,
             { new: true }
         ).select('_id e2e_public_key e2e_key_version');
 
@@ -263,6 +270,25 @@ exports.getUserE2EPublicKey = async (req, res) => {
         res.status(200).json({
             userId: user._id,
             e2e_public_key: user.e2e_public_key || '',
+            e2e_key_version: user.e2e_key_version || 1
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// NEW: Return the authenticated user's FULL key pair (public + private)
+// so any device/platform can restore the same identity and decrypt old messages.
+exports.getMyE2EKeys = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const user = await User.findById(userId).select('e2e_public_key e2e_private_key e2e_key_version');
+
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        res.status(200).json({
+            e2e_public_key: user.e2e_public_key || '',
+            e2e_private_key: user.e2e_private_key || '',
             e2e_key_version: user.e2e_key_version || 1
         });
     } catch (err) {

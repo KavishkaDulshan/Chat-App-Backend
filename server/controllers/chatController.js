@@ -27,18 +27,19 @@ exports.getConversations = async (req, res) => {
             let preview = "Start of conversation";
             let isDeleted = false;
 
+            let lastMessageType = 'text';
             if (lastMsgDoc) {
                 isDeleted = lastMsgDoc.isDeleted; // Get deleted status
                 preview = lastMsgDoc.content;
+                lastMessageType = lastMsgDoc.type || 'text';
 
-                if (!isDeleted && lastMsgDoc.type === 'text' && isE2EEnvelope(preview)) {
-                    preview = 'Encrypted message';
+                // ✅ E2E messages: return ciphertext as-is so client can decrypt
+                // Do NOT replace with 'Encrypted message' — the client will handle decryption
+                if (!isDeleted && lastMessageType === 'text' && isE2EEnvelope(preview)) {
+                    // Keep the raw E2E ciphertext — client decrypts it
                 }
-
-                // Decrypt if it's a real message and not deleted
-                if (!isDeleted && preview && !isE2EEnvelope(lastMsgDoc.content) && !preview.includes('📷 Image') && !preview.includes('Start of conversation')) {
-                    // Only attempt decrypt if it looks like encrypted text (no spaces usually) or based on your logic
-                    // Adding a safe check or try/catch is recommended
+                // Decrypt server-side AES-CBC encrypted messages (non-E2E)
+                else if (!isDeleted && preview && !isE2EEnvelope(preview) && !preview.includes('📷 Image') && !preview.includes('Start of conversation')) {
                     try {
                         preview = decrypt(preview);
                     } catch (e) {
@@ -51,7 +52,8 @@ exports.getConversations = async (req, res) => {
                 id: conv._id,
                 otherUser: otherUser,
                 lastMessage: preview,
-                lastMessageIsDeleted: isDeleted, // 3. Send the flag
+                lastMessageType: lastMessageType,     // ✅ NEW: helps client identify E2E messages
+                lastMessageIsDeleted: isDeleted,
                 updatedAt: conv.updatedAt
             };
         }));
