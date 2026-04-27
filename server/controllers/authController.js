@@ -170,29 +170,24 @@ exports.searchUser = async (req, res) => {
         const { username } = req.query;
         const currentUserId = req.user.id; // Comes from authMiddleware
 
-        let query = {};
-
-        // 1. If username is provided, search by Regex (Partial Match)
-        if (username && username.trim().length > 0) {
-            query = {
-                username: { $regex: username, $options: 'i' }, // 'i' = case insensitive
-                _id: { $ne: currentUserId } // Exclude myself
-            };
-        } else {
-            // 2. If NO username, return all users (or recent chats)
-            // This fixes the "Username query required" error on initial load
-            query = {
-                _id: { $ne: currentUserId } // Exclude myself
-            };
+        // SEC-4: Require a minimum query length to prevent user enumeration
+        if (!username || username.trim().length < 2) {
+            return res.status(200).json([]);
         }
 
-        // 3. Find users (Limit to 20 to avoid overloading)
+        // Sanitize regex input to prevent ReDoS
+        const sanitized = username.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        const query = {
+            username: { $regex: sanitized, $options: 'i' },
+            _id: { $ne: currentUserId } // Exclude myself
+        };
+
+        // Find users (Limit to 20 to avoid overloading)
         const users = await User.find(query)
-            .select('username email profile_pic is_online e2e_public_key e2e_key_version') // Only get necessary fields
+            .select('username email profile_pic is_online e2e_public_key e2e_key_version')
             .limit(20);
 
-        // 4. Always return 200 OK with a list (even if empty)
-        // This fixes the "Search Failed" logs
         res.status(200).json(users);
 
     } catch (err) {
@@ -204,10 +199,8 @@ exports.searchUser = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     try {
-        const { userId, profile_pic } = req.body;
-
-        // Security Check: Ensure user is updating their OWN profile
-        // (In a real app, use req.user.id from the authMiddleware instead of body)
+        const { profile_pic } = req.body;
+        const userId = req.user.id; // Secure: use authenticated user's ID from JWT
 
         const user = await User.findByIdAndUpdate(
             userId,

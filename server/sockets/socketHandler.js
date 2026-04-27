@@ -187,10 +187,56 @@ module.exports = (io) => {
                     };
                 }));
 
+                const hasMore = rawMessages.length === 50;
                 socket.join(roomId);
-                socket.emit('private_chat_ready', { roomId: roomId, history: messagesWithDetails });
+                socket.emit('private_chat_ready', { roomId: roomId, history: messagesWithDetails, hasMore: hasMore });
 
             } catch (err) { console.error("Join Chat Error:", err); }
+        });
+
+        // 2b. LOAD MORE MESSAGES (cursor-based pagination)
+        socket.on('load_more_messages', async ({ roomId, beforeId }) => {
+            try {
+                if (!mongoose.Types.ObjectId.isValid(roomId) || !mongoose.Types.ObjectId.isValid(beforeId)) return;
+
+                const myUserId = socket.data.user.id;
+                const rawMessages = await Message.find({
+                    conversation_id: roomId,
+                    _id: { $lt: beforeId }
+                })
+                    .sort({ createdAt: -1 })
+                    .limit(50);
+                const messages = rawMessages.reverse();
+
+                const messagesWithDetails = await Promise.all(messages.map(async (m) => {
+                    const senderDetails = await User.findById(m.sender_id).select('username profile_pic');
+
+                    let resolvedContent = m.content;
+                    if (m.isDeleted) {
+                        resolvedContent = 'This message was deleted';
+                    } else if (m.type === 'text' && isE2EEnvelope(m.content)) {
+                        resolvedContent = m.content;
+                    } else {
+                        resolvedContent = decrypt(m.content);
+                    }
+
+                    return {
+                        _id: m._id,
+                        content: resolvedContent,
+                        sender_id: m.sender_id,
+                        sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : (senderDetails?.username || 'Partner'),
+                        sender_avatar: senderDetails?.profile_pic || "",
+                        timestamp: m.createdAt,
+                        roomId: roomId,
+                        type: m.type || 'text',
+                        isDeleted: m.isDeleted,
+                        status: m.status
+                    };
+                }));
+
+                const hasMore = rawMessages.length === 50;
+                socket.emit('more_messages', { roomId, messages: messagesWithDetails, hasMore });
+            } catch (err) { console.error("Load More Messages Error:", err); }
         });
 
         // 3. READ RECEIPTS & DELETE

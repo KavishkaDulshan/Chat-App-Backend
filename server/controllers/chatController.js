@@ -14,9 +14,15 @@ exports.getConversations = async (req, res) => {
             const otherUserId = conv.participants.find(id => id.toString() !== userId);
             const otherUser = await User.findById(otherUserId).select('username email is_online profile_pic e2e_public_key e2e_key_version');
 
-            // ✅ CRITICAL FIX: If the other user no longer exists, skip this conversation
-            // This prevents the frontend from crashing when it tries to read properties of a null user
+            // BUG-2: If the other user no longer exists, clean up orphaned data
             if (!otherUser) {
+                // Fire-and-forget: delete orphaned conversation and its messages
+                Message.deleteMany({ conversation_id: conv._id }).catch(err =>
+                    console.error('Ghost cleanup (messages) error:', err)
+                );
+                Conversation.findByIdAndDelete(conv._id).catch(err =>
+                    console.error('Ghost cleanup (conversation) error:', err)
+                );
                 return null;
             }
 
