@@ -23,7 +23,12 @@ const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
+    // Exact match against whitelist
     if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    // Allow any localhost origin (Flutter web dev server uses random ports)
+    if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
@@ -33,6 +38,11 @@ const corsOptions = {
 };
 
 const app = express();
+
+// Trust the first proxy (Docker/Nginx/Azure reverse proxy)
+// Required for express-rate-limit to correctly read client IPs
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: corsOptions
