@@ -27,10 +27,11 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    // Allow any localhost origin (Flutter web dev server uses random ports)
-    if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+    // Allow any localhost/127.0.0.1 origin (Flutter web dev server uses random ports)
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       return callback(null, true);
     }
+    console.warn(`⚠️ CORS rejected origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
