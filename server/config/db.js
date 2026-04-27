@@ -1,7 +1,17 @@
 const mongoose = require('mongoose');
 
 const connectDB = async () => {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://mongo:27017/chat-app';
+    const mongoUri = process.env.MONGO_URI;
+
+    if (!mongoUri) {
+        console.error('❌ MONGO_URI is missing. Set your MongoDB Atlas URI in server/.env.');
+        process.exit(1);
+    }
+
+    if (mongoUri.includes('<db_password>')) {
+        console.error('❌ MONGO_URI still contains <db_password>. Replace it with your real Atlas password.');
+        process.exit(1);
+    }
 
     const connectWithRetry = async () => {
         try {
