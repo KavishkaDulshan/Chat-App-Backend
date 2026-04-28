@@ -1,3 +1,9 @@
+// Polyfill for global crypto required by @azure/storage-blob in Node 18
+const { webcrypto } = require('crypto');
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto;
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
