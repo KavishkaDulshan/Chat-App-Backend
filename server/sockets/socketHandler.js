@@ -5,6 +5,7 @@ const Conversation = require('../models/Conversation');
 const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
 const admin = require('../config/firebase');
+const { deleteBlob } = require('../config/azureStorage');
 
 const isE2EEnvelope = (text) => typeof text === 'string' && text.startsWith('e2e:v1:');
 
@@ -256,10 +257,21 @@ module.exports = (io) => {
             try {
                 const msg = await Message.findById(messageId);
                 if (!msg || msg.sender_id.toString() !== socket.data.user.id) return;
-                msg.isDeleted = true;
-                await msg.save();
+
+                // Hard-delete media blobs from Azure to reclaim storage
+                if (msg.type === 'image' || msg.type === 'audio') {
+                    await deleteBlob(msg.content);
+                    // Hard-delete the document from MongoDB
+                    await Message.deleteOne({ _id: messageId });
+                } else {
+                    // Text messages: soft-delete (keep record)
+                    msg.isDeleted = true;
+                    msg.content = '';
+                    await msg.save();
+                }
+
                 io.to(roomId).emit('message:deleted', messageId);
-            } catch (err) { console.error(err); }
+            } catch (err) { console.error('message:delete error:', err); }
         });
 
         socket.on('message:delivered', async ({ messageId, roomId }) => {

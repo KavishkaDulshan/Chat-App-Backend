@@ -2,6 +2,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const sendEmail = require('../utils/sendEmail'); // <--- Import this
+const { deleteBlob } = require('../config/azureStorage');
 
 
 exports.register = async (req, res) => {
@@ -201,6 +202,12 @@ exports.updateProfile = async (req, res) => {
     try {
         const { profile_pic } = req.body;
         const userId = req.user.id; // Secure: use authenticated user's ID from JWT
+
+        // Delete old profile pic blob from Azure (if it exists)
+        const existingUser = await User.findById(userId);
+        if (existingUser && existingUser.profile_pic) {
+            await deleteBlob(existingUser.profile_pic);
+        }
 
         const user = await User.findByIdAndUpdate(
             userId,

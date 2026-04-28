@@ -18,7 +18,7 @@ const UserSchema = new mongoose.Schema({
     e2e_private_key: { type: String, default: '' },
     e2e_key_version: { type: Number, default: 1 },
 
-    profile_pic: { type: String, default: "" } // Stores Cloudinary URL
+    profile_pic: { type: String, default: "" } // Stores Azure Blob URL (legacy: Cloudinary URL)
 
 }, { timestamps: true });
 
