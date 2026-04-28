@@ -271,7 +271,7 @@ module.exports = (io) => {
                 } else {
                     // Text messages: soft-delete (keep record)
                     msg.isDeleted = true;
-                    msg.content = '';
+                    msg.content = 'This message was deleted';
                     await msg.save();
                 }
 
