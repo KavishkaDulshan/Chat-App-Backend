@@ -260,7 +260,12 @@ module.exports = (io) => {
 
                 // Hard-delete media blobs from Azure to reclaim storage
                 if (msg.type === 'image' || msg.type === 'audio') {
-                    await deleteBlob(msg.content);
+                    try {
+                        const decryptedUrl = decrypt(msg.content);
+                        await deleteBlob(decryptedUrl);
+                    } catch (decErr) {
+                        console.error('Failed to decrypt or delete blob:', decErr);
+                    }
                     // Hard-delete the document from MongoDB
                     await Message.deleteOne({ _id: messageId });
                 } else {
