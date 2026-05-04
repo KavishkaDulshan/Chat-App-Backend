@@ -172,10 +172,14 @@ module.exports = (io) => {
                     .limit(50);
                 const messages = rawMessages.reverse();
 
-                // Fetch sender details for avatar in history
-                const messagesWithDetails = await Promise.all(messages.map(async (m) => {
-                    const senderDetails = await User.findById(m.sender_id).select('username profile_pic');
+                // Batch-fetch all unique senders in ONE query (fixes N+1)
+                const senderIds = [...new Set(messages.map(m => m.sender_id.toString()))];
+                const senderDocs = await User.find({ _id: { $in: senderIds } }).select('username profile_pic');
+                const senderMap = {};
+                senderDocs.forEach(s => { senderMap[s._id.toString()] = s; });
 
+                const messagesWithDetails = messages.map((m) => {
+                    const senderDetails = senderMap[m.sender_id.toString()];
                     let resolvedContent = m.content;
                     if (m.isDeleted) {
                         resolvedContent = 'This message was deleted';
@@ -184,24 +188,23 @@ module.exports = (io) => {
                     } else {
                         resolvedContent = decrypt(m.content);
                     }
-
                     return {
                         _id: m._id,
                         content: resolvedContent,
                         sender_id: m.sender_id,
                         sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : (senderDetails?.username || 'Partner'),
-                        sender_avatar: senderDetails?.profile_pic || "", // Include Avatar
+                        sender_avatar: senderDetails?.profile_pic || '',
                         timestamp: m.createdAt,
                         roomId: roomId,
                         type: m.type || 'text',
                         isDeleted: m.isDeleted,
                         status: m.status
                     };
-                }));
+                });
 
                 const hasMore = rawMessages.length === 50;
                 socket.join(roomId);
-                socket.emit('private_chat_ready', { roomId: roomId, history: messagesWithDetails, hasMore: hasMore });
+                socket.emit('private_chat_ready', { roomId, history: messagesWithDetails, hasMore });
 
             } catch (err) { console.error("Join Chat Error:", err); }
         });
@@ -220,9 +223,14 @@ module.exports = (io) => {
                     .limit(50);
                 const messages = rawMessages.reverse();
 
-                const messagesWithDetails = await Promise.all(messages.map(async (m) => {
-                    const senderDetails = await User.findById(m.sender_id).select('username profile_pic');
+                // Batch-fetch senders in ONE query
+                const senderIds = [...new Set(messages.map(m => m.sender_id.toString()))];
+                const senderDocs = await User.find({ _id: { $in: senderIds } }).select('username profile_pic');
+                const senderMap = {};
+                senderDocs.forEach(s => { senderMap[s._id.toString()] = s; });
 
+                const messagesWithDetails = messages.map((m) => {
+                    const senderDetails = senderMap[m.sender_id.toString()];
                     let resolvedContent = m.content;
                     if (m.isDeleted) {
                         resolvedContent = 'This message was deleted';
@@ -231,20 +239,19 @@ module.exports = (io) => {
                     } else {
                         resolvedContent = decrypt(m.content);
                     }
-
                     return {
                         _id: m._id,
                         content: resolvedContent,
                         sender_id: m.sender_id,
                         sender_name: (m.sender_id.toString() === myUserId.toString()) ? 'Me' : (senderDetails?.username || 'Partner'),
-                        sender_avatar: senderDetails?.profile_pic || "",
+                        sender_avatar: senderDetails?.profile_pic || '',
                         timestamp: m.createdAt,
                         roomId: roomId,
                         type: m.type || 'text',
                         isDeleted: m.isDeleted,
                         status: m.status
                     };
-                }));
+                });
 
                 const hasMore = rawMessages.length === 50;
                 socket.emit('more_messages', { roomId, messages: messagesWithDetails, hasMore });
