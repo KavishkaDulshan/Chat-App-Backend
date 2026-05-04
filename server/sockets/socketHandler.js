@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
+const ContactRequest = require('../models/ContactRequest');
+const { getContactStatusHelper } = require('../controllers/contactController');
 const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
 const admin = require('../config/firebase');
@@ -55,13 +57,21 @@ module.exports = (io) => {
                 let { content, roomId, type = 'text' } = msgData;
                 const senderId = socket.data.user.id;
 
-                // --- FIX 1: DEFINE SENDER ---
                 const sender = await User.findById(senderId).select('username profile_pic');
-                // ----------------------------
 
                 if (!mongoose.Types.ObjectId.isValid(roomId)) {
                     const parts = roomId.split('_');
                     if (parts.length === 2) {
+                        // Guard: check contact status before allowing new conversation creation
+                        const otherUserId = parts.find(p => p !== senderId);
+                        if (otherUserId) {
+                            const status = await getContactStatusHelper(senderId, otherUserId);
+                            if (status !== 'contacts') {
+                                socket.emit('error', { message: 'You must be contacts before messaging.' });
+                                return;
+                            }
+                        }
+
                         let conv = await Conversation.findOne({ participants: { $all: parts } });
                         if (!conv) {
                             conv = new Conversation({ participants: parts, last_message: 'Start' });
@@ -159,6 +169,12 @@ module.exports = (io) => {
                 });
 
                 if (!conversation) {
+                    // Guard: only allow creating new conversations between contacts
+                    const status = await getContactStatusHelper(myUserId, otherUserId);
+                    if (status !== 'contacts') {
+                        socket.emit('error', { message: 'You must be contacts before messaging.' });
+                        return;
+                    }
                     conversation = new Conversation({
                         participants: [myUserId, otherUserId],
                         last_message: 'Start of conversation'
@@ -310,6 +326,100 @@ module.exports = (io) => {
 
         socket.on('typing', (roomId) => socket.broadcast.to(roomId).emit('display_typing', { username: socket.data.user.username, roomId }));
         socket.on('stop_typing', (roomId) => socket.broadcast.to(roomId).emit('hide_typing', { roomId }));
+
+        // 4. CONTACT REQUEST — real-time notification
+        socket.on('contact:send_request', async ({ toUserId }) => {
+            try {
+                const fromId = socket.data.user.id;
+                if (!toUserId || fromId === toUserId) return;
+
+                // Check for duplicate
+                const existing = await ContactRequest.findOne({
+                    $or: [
+                        { from: fromId, to: toUserId },
+                        { from: toUserId, to: fromId }
+                    ]
+                });
+
+                if (existing && existing.status === 'pending') {
+                    // If they sent to us, auto-accept
+                    if (existing.from.toString() === toUserId) {
+                        existing.status = 'accepted';
+                        await existing.save();
+                        const fromUser = await User.findById(fromId).select('username profile_pic is_online');
+                        io.to(toUserId).emit('contact:request_accepted', {
+                            byUserId: fromId,
+                            byUsername: fromUser?.username,
+                            byAvatar: fromUser?.profile_pic,
+                        });
+                        socket.emit('contact:request_accepted', {
+                            byUserId: toUserId,
+                            requestId: existing._id,
+                        });
+                    }
+                    return;
+                }
+
+                if (existing && existing.status === 'accepted') return;
+
+                // Remove old declined
+                await ContactRequest.deleteOne({ from: fromId, to: toUserId, status: 'declined' });
+                await ContactRequest.deleteOne({ from: toUserId, to: fromId, status: 'declined' });
+
+                const newReq = new ContactRequest({ from: fromId, to: toUserId });
+                await newReq.save();
+
+                const fromUser = await User.findById(fromId).select('username profile_pic is_online');
+                // Notify the receiver in real-time
+                io.to(toUserId).emit('contact:request_received', {
+                    requestId: newReq._id,
+                    fromUserId: fromId,
+                    fromUsername: fromUser?.username,
+                    fromAvatar: fromUser?.profile_pic,
+                    fromIsOnline: fromUser?.is_online,
+                });
+
+                socket.emit('contact:request_sent', { requestId: newReq._id, toUserId });
+            } catch (err) {
+                if (err.code !== 11000) console.error('contact:send_request error:', err);
+            }
+        });
+
+        socket.on('contact:accept_request', async ({ requestId, fromUserId }) => {
+            try {
+                const myId = socket.data.user.id;
+                const request = await ContactRequest.findById(requestId);
+                if (!request || request.to.toString() !== myId || request.status !== 'pending') return;
+
+                request.status = 'accepted';
+                await request.save();
+
+                const meUser = await User.findById(myId).select('username profile_pic is_online');
+                // Notify original sender
+                io.to(fromUserId).emit('contact:request_accepted', {
+                    byUserId: myId,
+                    byUsername: meUser?.username,
+                    byAvatar: meUser?.profile_pic,
+                });
+                // Confirm to acceptor
+                socket.emit('contact:request_accepted', { byUserId: fromUserId, requestId });
+            } catch (err) {
+                console.error('contact:accept_request error:', err);
+            }
+        });
+
+        socket.on('contact:decline_request', async ({ requestId }) => {
+            try {
+                const myId = socket.data.user.id;
+                const request = await ContactRequest.findById(requestId);
+                if (!request || request.to.toString() !== myId) return;
+                request.status = 'declined';
+                await request.save();
+                socket.emit('contact:request_declined', { requestId });
+            } catch (err) {
+                console.error('contact:decline_request error:', err);
+            }
+        });
 
         socket.on('disconnect', async () => {
             await User.findByIdAndUpdate(userId, { is_online: false });

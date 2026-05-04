@@ -1,8 +1,9 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const sendEmail = require('../utils/sendEmail'); // <--- Import this
+const sendEmail = require('../utils/sendEmail');
 const { deleteBlob } = require('../config/azureStorage');
+const { getContactStatusHelper } = require('./contactController');
 
 
 exports.register = async (req, res) => {
@@ -202,34 +203,45 @@ exports.saveFcmToken = async (req, res) => {
 exports.searchUser = async (req, res) => {
     try {
         const { username } = req.query;
-        const currentUserId = req.user.id; // Comes from authMiddleware
+        const currentUserId = req.user.id;
 
-        // SEC-4: Require a minimum query length to prevent user enumeration
         if (!username || username.trim().length < 2) {
             return res.status(200).json([]);
         }
 
-        // Sanitize regex input to prevent ReDoS
         const sanitized = username.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
         const query = {
             username: { $regex: sanitized, $options: 'i' },
-            _id: { $ne: currentUserId } // Exclude myself
+            _id: { $ne: currentUserId }
         };
 
-        // Find users (Limit to 20 to avoid overloading)
         const users = await User.find(query)
             .select('username email profile_pic is_online e2e_public_key e2e_key_version')
             .limit(20);
 
-        res.status(200).json(users);
+        // Attach contact status for each user
+        const results = await Promise.all(users.map(async (u) => {
+            const contactStatus = await getContactStatusHelper(currentUserId, u._id.toString());
+            return {
+                _id: u._id,
+                username: u.username,
+                email: u.email,
+                profile_pic: u.profile_pic,
+                is_online: u.is_online,
+                e2e_public_key: u.e2e_public_key,
+                e2e_key_version: u.e2e_key_version,
+                contactStatus,
+            };
+        }));
+
+        res.status(200).json(results);
 
     } catch (err) {
         console.error("Search Error:", err);
         res.status(500).json({ error: "Server error during search" });
     }
 };
-
 
 exports.updateProfile = async (req, res) => {
     try {

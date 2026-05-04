@@ -17,6 +17,7 @@ require('dotenv').config();
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const contactRoutes = require('./routes/contactRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const socketHandler = require('./sockets/socketHandler');
 
@@ -88,9 +89,10 @@ app.use('/register', authLimiter);
 app.use('/login', authLimiter);
 app.use('/verify-otp', authLimiter);
 
-app.use('/', authRoutes);      // /register, /login, /search
-app.use('/chat', chatRoutes);  // <--- CHANGED: Added '/chat' prefix to match Frontend
-app.use('/', uploadRoutes);    // /upload
+app.use('/', authRoutes);           // /register, /login, /search
+app.use('/chat', chatRoutes);       // /chat/conversations/:userId
+app.use('/contacts', contactRoutes); // /contacts/request, /contacts/pending, etc.
+app.use('/', uploadRoutes);         // /upload
 
 // 4. Initialize Socket Logic
 socketHandler(io);
