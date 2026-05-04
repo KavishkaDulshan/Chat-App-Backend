@@ -108,7 +108,11 @@ exports.declineRequest = async (req, res) => {
 
         const request = await ContactRequest.findById(requestId);
         if (!request) return res.status(404).json({ error: 'Request not found' });
-        if (request.to.toString() !== myId) return res.status(403).json({ error: 'Not authorized' });
+        
+        // Allow either the receiver to decline, or the sender to cancel
+        if (request.to.toString() !== myId && request.from.toString() !== myId) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
 
         request.status = 'declined';
         await request.save();
@@ -119,15 +123,22 @@ exports.declineRequest = async (req, res) => {
     }
 };
 
-// GET /contacts/pending  — incoming pending requests for the logged-in user
+// GET /contacts/pending  — incoming and outgoing pending requests
 exports.getPendingRequests = async (req, res) => {
     try {
         const myId = req.user.id;
-        const requests = await ContactRequest.find({ to: myId, status: 'pending' })
+        
+        // Incoming
+        const incomingReqs = await ContactRequest.find({ to: myId, status: 'pending' })
             .populate('from', 'username profile_pic is_online')
             .sort({ createdAt: -1 });
 
-        const formatted = requests.map(r => ({
+        // Outgoing
+        const outgoingReqs = await ContactRequest.find({ from: myId, status: 'pending' })
+            .populate('to', 'username profile_pic is_online')
+            .sort({ createdAt: -1 });
+
+        const incomingFormatted = incomingReqs.map(r => ({
             requestId: r._id,
             fromUserId: r.from._id,
             fromUsername: r.from.username,
@@ -136,7 +147,19 @@ exports.getPendingRequests = async (req, res) => {
             createdAt: r.createdAt,
         }));
 
-        res.json(formatted);
+        const outgoingFormatted = outgoingReqs.map(r => ({
+            requestId: r._id,
+            toUserId: r.to._id,
+            toUsername: r.to.username,
+            toAvatar: r.to.profile_pic,
+            toIsOnline: r.to.is_online,
+            createdAt: r.createdAt,
+        }));
+
+        res.json({
+            incoming: incomingFormatted,
+            outgoing: outgoingFormatted
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

@@ -412,10 +412,20 @@ module.exports = (io) => {
             try {
                 const myId = socket.data.user.id;
                 const request = await ContactRequest.findById(requestId);
-                if (!request || request.to.toString() !== myId) return;
+                if (!request) return;
+                
+                // Allow either to or from to cancel/decline
+                if (request.to.toString() !== myId && request.from.toString() !== myId) return;
+                
                 request.status = 'declined';
                 await request.save();
-                socket.emit('contact:request_declined', { requestId });
+                
+                // Notify the person who cancelled/declined
+                socket.emit('contact:request_declined', { requestId, byUserId: myId });
+                
+                // Notify the other person
+                const otherId = request.to.toString() === myId ? request.from.toString() : request.to.toString();
+                io.to(otherId).emit('contact:request_declined', { requestId, byUserId: myId });
             } catch (err) {
                 console.error('contact:decline_request error:', err);
             }
