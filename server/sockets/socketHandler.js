@@ -105,6 +105,17 @@ module.exports = (io) => {
 
                 // TARGETED EMIT + PUSH NOTIFICATION
                 if (conversation && conversation.participants) {
+                    // Find the receiver (the other participant) for the sender's payload
+                    const receiverId = conversation.participants.find(p => p.toString() !== senderId);
+                    if (receiverId) {
+                        const receiver = await User.findById(receiverId).select('username profile_pic');
+                        if (receiver) {
+                            payload.receiver_id = receiverId.toString();
+                            payload.receiver_name = receiver.username;
+                            payload.receiver_avatar = receiver.profile_pic;
+                        }
+                    }
+
                     conversation.participants.forEach(async (participantId) => {
                         const pidStr = participantId.toString();
 

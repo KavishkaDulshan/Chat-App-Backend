@@ -126,22 +126,55 @@ exports.login = async (req, res) => {
     }
 };
 
-
-exports.searchUser = async (req, res) => {
+exports.forgotPassword = async (req, res) => {
     try {
-        const { username } = req.query;
-        if (!username || typeof username !== 'string') return res.json([]);
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: "Email is required" });
 
-        const user = await User.findOne({
-            username: { $regex: new RegExp(`^${username}$`, 'i') }
-        }).select('-password');
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ error: "User not found" });
 
-        if (!user) return res.status(404).json({ error: "User not found" });
-        res.json(user);
+        // Generate 6-digit OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpires = Date.now() + 10 * 60 * 1000; // 10 Minutes from now
+
+        user.otp = otp;
+        user.otpExpires = otpExpires;
+        await user.save();
+
+        await sendEmail(email, otp);
+
+        res.status(200).json({ message: "Password reset OTP sent to email." });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+        if (!email || !otp || !newPassword) return res.status(400).json({ error: "All fields are required" });
+
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ error: "User not found" });
+
+        if (user.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
+        if (user.otpExpires < Date.now()) return res.status(400).json({ error: "OTP has expired" });
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        user.password = hashedPassword;
+        user.otp = undefined;
+        user.otpExpires = undefined;
+        await user.save();
+
+        res.status(200).json({ message: "Password reset successful" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
 
 exports.saveFcmToken = async (req, res) => {
     try {
@@ -200,18 +233,24 @@ exports.searchUser = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     try {
-        const { profile_pic } = req.body;
+        const { profile_pic, username } = req.body;
         const userId = req.user.id; // Secure: use authenticated user's ID from JWT
 
-        // Delete old profile pic blob from Azure (if it exists)
         const existingUser = await User.findById(userId);
-        if (existingUser && existingUser.profile_pic) {
+        if (!existingUser) return res.status(404).json({ error: "User not found" });
+
+        // Delete old profile pic blob from Azure (if it exists and is being replaced)
+        if (profile_pic && existingUser.profile_pic && existingUser.profile_pic !== profile_pic) {
             await deleteBlob(existingUser.profile_pic);
         }
 
+        const updateData = {};
+        if (profile_pic) updateData.profile_pic = profile_pic;
+        if (username) updateData.username = username;
+
         const user = await User.findByIdAndUpdate(
             userId,
-            { profile_pic: profile_pic },
+            updateData,
             { new: true } // Return the updated user
         ).select('-password'); // Don't send back password
 

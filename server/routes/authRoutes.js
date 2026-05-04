@@ -13,6 +13,8 @@ const authMiddleware = require('../middleware/authMiddleware');
 router.post('/register', authController.register);
 router.post('/login', authController.login);
 router.post('/verify-otp', authController.verifyOTP); // <--- ADD THIS LINE
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password', authController.resetPassword);
 
 // Protected Route for FCM (This is the one crashing)
 router.post('/fcm-token', authMiddleware, authController.saveFcmToken);
