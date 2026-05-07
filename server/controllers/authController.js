@@ -78,7 +78,8 @@ exports.verifyOTP = async (req, res) => {
                 email: user.email,
                 profile_pic: user.profile_pic,
                 e2e_public_key: user.e2e_public_key,
-                e2e_key_version: user.e2e_key_version
+                e2e_key_version: user.e2e_key_version,
+                settings: user.settings
             }
         });
 
@@ -119,7 +120,8 @@ exports.login = async (req, res) => {
                 email: user.email,
                 profile_pic: user.profile_pic,
                 e2e_public_key: user.e2e_public_key,
-                e2e_key_version: user.e2e_key_version
+                e2e_key_version: user.e2e_key_version,
+                settings: user.settings
             }
         });
     } catch (err) {
@@ -245,7 +247,7 @@ exports.searchUser = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     try {
-        const { profile_pic, username } = req.body;
+        const { profile_pic, username, showNotificationPreview } = req.body;
         const userId = req.user.id; // Secure: use authenticated user's ID from JWT
 
         const existingUser = await User.findById(userId);
@@ -259,6 +261,9 @@ exports.updateProfile = async (req, res) => {
         const updateData = {};
         if (profile_pic) updateData.profile_pic = profile_pic;
         if (username) updateData.username = username;
+        if (typeof showNotificationPreview === 'boolean') {
+            updateData['settings.showNotificationPreview'] = showNotificationPreview;
+        }
 
         const user = await User.findByIdAndUpdate(
             userId,

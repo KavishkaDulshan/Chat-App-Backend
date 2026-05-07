@@ -136,19 +136,30 @@ module.exports = (io) => {
                                 const recipient = await User.findById(participantId);
 
                                 if (recipient && !recipient.is_online && recipient.fcm_tokens && recipient.fcm_tokens.length > 0) {
-                                    await admin.messaging().sendEachForMulticast({
+                                    const fcmPayload = {
                                         tokens: recipient.fcm_tokens,
-                                        notification: {
-                                            title: `New Message from ${sender.username}`,
-                                            body: type === 'image' ? "Sent an image" : "Tap to view message",
-                                        },
                                         data: {
                                             click_action: "FLUTTER_NOTIFICATION_CLICK",
                                             roomId: roomId,
                                             senderId: senderId,
-                                            type: "chat_message"
+                                            type: "chat_message",
+                                            content: storedContent, // pass the ciphertext
+                                            msgType: type, // text/image/audio
+                                            senderName: sender.username
                                         }
-                                    });
+                                    };
+
+                                    // If preview is OFF, use standard OS notification banner.
+                                    // If preview is ON, we omit 'notification' so Flutter can intercept the data 
+                                    // and decrypt it to build a Local Notification containing the true text.
+                                    if (!recipient.settings?.showNotificationPreview) {
+                                        fcmPayload.notification = {
+                                            title: `New Message from ${sender.username}`,
+                                            body: type === 'image' ? "Sent an image" : "Tap to view message",
+                                        };
+                                    }
+
+                                    await admin.messaging().sendEachForMulticast(fcmPayload);
                                 }
                             } catch (fcmError) {
                                 console.error("❌ FCM Error:", fcmError);
