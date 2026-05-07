@@ -25,6 +25,26 @@ const containerClient = blobServiceClient.getContainerClient(containerName);
         await containerClient.createIfNotExists({
             access: 'blob' // Public read access for blobs (URLs work directly)
         });
+        
+        // Configure CORS for Flutter Web (CanvasKit requires CORS for external images)
+        const serviceProperties = await blobServiceClient.getProperties();
+        let corsRules = serviceProperties.cors || [];
+        
+        const hasWildcardCors = corsRules.some(rule => rule.allowedOrigins === '*');
+        
+        if (!hasWildcardCors) {
+            corsRules.push({
+                allowedOrigins: '*',
+                allowedMethods: 'GET,OPTIONS',
+                allowedHeaders: '*',
+                exposedHeaders: '*',
+                maxAgeInSeconds: 86400
+            });
+            serviceProperties.cors = corsRules;
+            await blobServiceClient.setProperties(serviceProperties);
+            console.log(`✅ Azure Blob CORS configured for Flutter Web`);
+        }
+
         console.log(`✅ Azure Blob container "${containerName}" ready`);
     } catch (err) {
         console.error('❌ Azure container init error:', err.message);
