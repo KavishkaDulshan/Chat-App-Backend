@@ -145,20 +145,13 @@ module.exports = (io) => {
                                             type: "chat_message",
                                             content: storedContent, // pass the ciphertext
                                             msgType: type, // text/image/audio
-                                            senderName: sender.username
+                                            senderName: sender.username,
+                                            previewEnabled: recipient.settings?.showNotificationPreview ? "true" : "false"
                                         }
                                     };
 
-                                    // If preview is OFF, use standard OS notification banner.
-                                    // If preview is ON, we omit 'notification' so Flutter can intercept the data 
-                                    // and decrypt it to build a Local Notification containing the true text.
-                                    if (!recipient.settings?.showNotificationPreview) {
-                                        fcmPayload.notification = {
-                                            title: `New Message from ${sender.username}`,
-                                            body: type === 'image' ? "Sent an image" : "Tap to view message",
-                                        };
-                                    }
-
+                                    // Always omit the 'notification' block so the Flutter background handler 
+                                    // reliably intercepts the message and handles the UI via flutter_local_notifications.
                                     await admin.messaging().sendEachForMulticast(fcmPayload);
                                 }
                             } catch (fcmError) {
