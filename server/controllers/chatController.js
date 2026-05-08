@@ -54,13 +54,21 @@ exports.getConversations = async (req, res) => {
                 }
             }
 
+            // 3. Count unread messages
+            const unreadCount = await Message.countDocuments({
+                conversation_id: conv._id,
+                sender_id: otherUserId,
+                status: { $ne: 'read' }
+            });
+
             return {
                 id: conv._id,
                 otherUser: otherUser,
                 lastMessage: preview,
                 lastMessageType: lastMessageType,     // ✅ NEW: helps client identify E2E messages
                 lastMessageIsDeleted: isDeleted,
-                updatedAt: conv.updatedAt
+                updatedAt: conv.updatedAt,
+                unreadCount: unreadCount
             };
         }));
 
