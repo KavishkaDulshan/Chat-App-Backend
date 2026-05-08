@@ -332,10 +332,13 @@ module.exports = (io) => {
         socket.on('stop_typing', (roomId) => socket.broadcast.to(roomId).emit('hide_typing', { roomId }));
 
         // 4. CONTACT REQUEST — real-time notification
-        socket.on('contact:send_request', async ({ toUserId }) => {
+        socket.on('contact:send_request', async ({ toUserId }, callback) => {
             try {
                 const fromId = socket.data.user.id;
-                if (!toUserId || fromId === toUserId) return;
+                if (!toUserId || fromId === toUserId) {
+                    if (callback) callback({ status: 'error', message: 'Invalid request' });
+                    return;
+                }
 
                 // Check for duplicate
                 const existing = await ContactRequest.findOne({
@@ -350,6 +353,17 @@ module.exports = (io) => {
                     if (existing.from.toString() === toUserId) {
                         existing.status = 'accepted';
                         await existing.save();
+                        
+                        // AUTO CREATE CONVERSATION
+                        let conv = await Conversation.findOne({ participants: { $all: [fromId, toUserId] } });
+                        if (!conv) {
+                            conv = new Conversation({
+                                participants: [fromId, toUserId],
+                                last_message: 'Say hi!'
+                            });
+                            await conv.save();
+                        }
+
                         const fromUser = await User.findById(fromId).select('username profile_pic is_online');
                         io.to(toUserId).emit('contact:request_accepted', {
                             byUserId: fromId,
@@ -360,11 +374,17 @@ module.exports = (io) => {
                             byUserId: toUserId,
                             requestId: existing._id,
                         });
+                        if (callback) callback({ status: 'success', data: { status: 'contacts' } });
+                    } else {
+                        if (callback) callback({ status: 'success', data: { status: 'pending_sent' } });
                     }
                     return;
                 }
 
-                if (existing && existing.status === 'accepted') return;
+                if (existing && existing.status === 'accepted') {
+                    if (callback) callback({ status: 'success', data: { status: 'contacts' } });
+                    return;
+                }
 
                 // Remove old declined
                 await ContactRequest.deleteOne({ from: fromId, to: toUserId, status: 'declined' });
@@ -384,19 +404,34 @@ module.exports = (io) => {
                 });
 
                 socket.emit('contact:request_sent', { requestId: newReq._id, toUserId });
+                if (callback) callback({ status: 'success', data: { status: 'pending_sent' } });
             } catch (err) {
                 if (err.code !== 11000) console.error('contact:send_request error:', err);
+                if (callback) callback({ status: 'error', message: err.message });
             }
         });
 
-        socket.on('contact:accept_request', async ({ requestId, fromUserId }) => {
+        socket.on('contact:accept_request', async ({ requestId, fromUserId }, callback) => {
             try {
                 const myId = socket.data.user.id;
                 const request = await ContactRequest.findById(requestId);
-                if (!request || request.to.toString() !== myId || request.status !== 'pending') return;
+                if (!request || request.to.toString() !== myId || request.status !== 'pending') {
+                    if (callback) callback({ status: 'error', message: 'Invalid request' });
+                    return;
+                }
 
                 request.status = 'accepted';
                 await request.save();
+
+                // AUTO CREATE CONVERSATION
+                let conv = await Conversation.findOne({ participants: { $all: [myId, fromUserId] } });
+                if (!conv) {
+                    conv = new Conversation({
+                        participants: [myId, fromUserId],
+                        last_message: 'Say hi!'
+                    });
+                    await conv.save();
+                }
 
                 const meUser = await User.findById(myId).select('username profile_pic is_online');
                 // Notify original sender
@@ -407,19 +442,27 @@ module.exports = (io) => {
                 });
                 // Confirm to acceptor
                 socket.emit('contact:request_accepted', { byUserId: fromUserId, requestId });
+                if (callback) callback({ status: 'success' });
             } catch (err) {
                 console.error('contact:accept_request error:', err);
+                if (callback) callback({ status: 'error', message: err.message });
             }
         });
 
-        socket.on('contact:decline_request', async ({ requestId }) => {
+        socket.on('contact:decline_request', async ({ requestId }, callback) => {
             try {
                 const myId = socket.data.user.id;
                 const request = await ContactRequest.findById(requestId);
-                if (!request) return;
+                if (!request) {
+                    if (callback) callback({ status: 'error', message: 'Not found' });
+                    return;
+                }
                 
                 // Allow either to or from to cancel/decline
-                if (request.to.toString() !== myId && request.from.toString() !== myId) return;
+                if (request.to.toString() !== myId && request.from.toString() !== myId) {
+                    if (callback) callback({ status: 'error', message: 'Not authorized' });
+                    return;
+                }
                 
                 request.status = 'declined';
                 await request.save();
@@ -430,8 +473,11 @@ module.exports = (io) => {
                 // Notify the other person
                 const otherId = request.to.toString() === myId ? request.from.toString() : request.to.toString();
                 io.to(otherId).emit('contact:request_declined', { requestId, byUserId: myId });
+                
+                if (callback) callback({ status: 'success' });
             } catch (err) {
                 console.error('contact:decline_request error:', err);
+                if (callback) callback({ status: 'error', message: err.message });
             }
         });
 
