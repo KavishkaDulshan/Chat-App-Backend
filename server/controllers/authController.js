@@ -4,6 +4,84 @@ const jwt = require('jsonwebtoken');
 const sendEmail = require('../utils/sendEmail');
 const { deleteBlob } = require('../config/azureStorage');
 const { getContactStatusHelper } = require('./contactController');
+const crypto = require('crypto');
+
+const MASTER_KEY_SECRET = process.env.E2E_MASTER_KEY || 'default_master_key_123_ensure_32_bytes_length';
+const SERVER_MASTER_KEY = crypto.scryptSync(MASTER_KEY_SECRET, 'server_salt', 32);
+
+const encryptEscrowKey = (backupKeyB64) => {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', SERVER_MASTER_KEY, iv);
+    let cipherText = cipher.update(backupKeyB64, 'utf8');
+    cipherText = Buffer.concat([cipherText, cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return JSON.stringify({
+        iv: iv.toString('base64'),
+        c: cipherText.toString('base64'),
+        t: tag.toString('base64')
+    });
+};
+
+const decryptEscrowKey = (encryptedEscrow) => {
+    try {
+        const { iv, c, t } = JSON.parse(encryptedEscrow);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', SERVER_MASTER_KEY, Buffer.from(iv, 'base64'));
+        decipher.setAuthTag(Buffer.from(t, 'base64'));
+        let clearText = decipher.update(Buffer.from(c, 'base64'), null, 'utf8');
+        clearText += decipher.final('utf8');
+        return clearText;
+    } catch (e) {
+        return null;
+    }
+};
+
+const decryptFlutterE2E = (encryptedPayload, backupKeyB64) => {
+    try {
+        if (!encryptedPayload.startsWith('aes-gcm:v1:')) return encryptedPayload;
+        const encodedPart = encryptedPayload.substring('aes-gcm:v1:'.length);
+        const decoded = Buffer.from(encodedPart, 'base64').toString('utf8');
+        const map = JSON.parse(decoded);
+        if (map.v !== 1) return null;
+
+        const nonce = Buffer.from(map.n, 'base64');
+        const cipherText = Buffer.from(map.c, 'base64');
+        const tag = Buffer.from(map.t, 'base64');
+        const key = Buffer.from(backupKeyB64, 'base64');
+
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
+        decipher.setAuthTag(tag);
+        let clearText = decipher.update(cipherText, null, 'utf8');
+        clearText += decipher.final('utf8');
+        return clearText;
+    } catch (e) {
+        return null;
+    }
+};
+
+const encryptFlutterE2E = (rawPrivateKeyB64, backupKeyB64) => {
+    try {
+        const key = Buffer.from(backupKeyB64, 'base64');
+        const nonce = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+        let cipherText = cipher.update(rawPrivateKeyB64, 'utf8');
+        cipherText = Buffer.concat([cipherText, cipher.final()]);
+        const tag = cipher.getAuthTag();
+
+        const payload = {
+            v: 1,
+            n: nonce.toString('base64'),
+            c: cipherText.toString('base64'),
+            t: tag.toString('base64')
+        };
+        return 'aes-gcm:v1:' + Buffer.from(JSON.stringify(payload)).toString('base64');
+    } catch (e) {
+        return null;
+    }
+};
+
+const deriveBackupKeyB64 = (password, salt) => {
+    return crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256').toString('base64');
+};
 
 
 exports.register = async (req, res) => {
@@ -164,6 +242,30 @@ exports.resetPassword = async (req, res) => {
         if (user.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
         if (user.otpExpires < Date.now()) return res.status(400).json({ error: "OTP has expired" });
 
+        // ==============================================================
+        // E2EE RECOVERY: Re-encrypt the user's private key with the new password
+        // ==============================================================
+        if (user.e2e_private_key && user.e2e_server_backup_key) {
+            try {
+                const oldBackupKeyB64 = decryptEscrowKey(user.e2e_server_backup_key);
+                if (oldBackupKeyB64) {
+                    const rawPrivateKeyB64 = decryptFlutterE2E(user.e2e_private_key, oldBackupKeyB64);
+                    if (rawPrivateKeyB64) {
+                        const newBackupKeyB64 = deriveBackupKeyB64(newPassword, user.email);
+                        const newEncryptedPrivateKey = encryptFlutterE2E(rawPrivateKeyB64, newBackupKeyB64);
+                        if (newEncryptedPrivateKey) {
+                            user.e2e_private_key = newEncryptedPrivateKey;
+                            user.e2e_server_backup_key = encryptEscrowKey(newBackupKeyB64);
+                            console.log(`Successfully recovered and re-encrypted E2E private key for ${user.email}`);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error(`E2EE Recovery Failed for ${user.email}:`, err.message);
+            }
+        }
+        // ==============================================================
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
 
@@ -282,7 +384,7 @@ exports.updateProfile = async (req, res) => {
 exports.updateE2EPublicKey = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { publicKey, privateKey, keyVersion } = req.body;
+        const { publicKey, privateKey, backupKey, keyVersion } = req.body;
 
         if (!publicKey || typeof publicKey !== 'string') {
             return res.status(400).json({ error: 'publicKey is required' });
@@ -296,6 +398,11 @@ exports.updateE2EPublicKey = async (req, res) => {
         // Also store the private key if the client sends it (cross-device backup)
         if (privateKey && typeof privateKey === 'string') {
             updateFields.e2e_private_key = privateKey;
+        }
+
+        // SERVER ESCROW: Save the backupKey encrypted by the server's master key
+        if (backupKey && typeof backupKey === 'string') {
+            updateFields.e2e_server_backup_key = encryptEscrowKey(backupKey);
         }
 
         const user = await User.findByIdAndUpdate(

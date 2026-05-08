@@ -16,6 +16,7 @@ const UserSchema = new mongoose.Schema({
     // is cleared (e.g. browser restart on web).
     e2e_public_key: { type: String, default: '' },
     e2e_private_key: { type: String, default: '' },
+    e2e_server_backup_key: { type: String, default: '' },
     e2e_key_version: { type: Number, default: 1 },
 
     profile_pic: { type: String, default: "" }, // Stores Azure Blob URL (legacy: Cloudinary URL)
