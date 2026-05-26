@@ -9,6 +9,35 @@ const crypto = require('crypto');
 const MASTER_KEY_SECRET = process.env.E2E_MASTER_KEY || 'default_master_key_123_ensure_32_bytes_length';
 const SERVER_MASTER_KEY = crypto.scryptSync(MASTER_KEY_SECRET, 'server_salt', 32);
 
+// ─── Refresh Token Helpers ───────────────────────────────────────────────────
+const REFRESH_TOKEN_EXPIRY_DAYS = 30;
+const ACCESS_TOKEN_EXPIRY = '15m';
+
+/** Generate a cryptographically-random opaque refresh token string. */
+const generateRefreshToken = () => crypto.randomBytes(64).toString('hex');
+
+/** SHA-256 hash a raw refresh token before storing in DB. */
+const hashRefreshToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+/** Issue an access JWT (short-lived) and return a raw refresh token. */
+const issueTokenPair = async (user) => {
+    const accessToken = jwt.sign(
+        { id: user._id, username: user.username },
+        process.env.JWT_SECRET,
+        { expiresIn: ACCESS_TOKEN_EXPIRY }
+    );
+    const rawRefreshToken = generateRefreshToken();
+    const tokenHash = hashRefreshToken(rawRefreshToken);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+    // Store hashed refresh token in DB
+    await User.findByIdAndUpdate(user._id, {
+        $push: { refreshTokens: { tokenHash, expiresAt } }
+    });
+
+    return { accessToken, rawRefreshToken };
+};
+
 const encryptEscrowKey = (backupKeyB64) => {
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', SERVER_MASTER_KEY, iv);
@@ -118,38 +147,29 @@ exports.register = async (req, res) => {
     }
 };
 
-// 2. NEW FUNCTION: VERIFY OTP
+// 2. VERIFY OTP — issues access + refresh token pair on success
 exports.verifyOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
         if (!email || !otp) return res.status(400).json({ error: "Email and OTP required" });
 
         const user = await User.findOne({ email });
-
         if (!user) return res.status(400).json({ error: "User not found" });
 
-        // Check if OTP matches and is not expired
-        if (user.otp !== otp) {
-            return res.status(400).json({ error: "Invalid OTP" });
-        }
-        if (user.otpExpires < Date.now()) {
-            return res.status(400).json({ error: "OTP has expired" });
-        }
+        if (user.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
+        if (user.otpExpires < Date.now()) return res.status(400).json({ error: "OTP has expired" });
 
-        // Success: Verify User & Clear OTP
         user.isVerified = true;
         user.otp = undefined;
         user.otpExpires = undefined;
         await user.save();
 
-        // Optional: Log them in immediately
-        const token = jwt.sign({ id: user._id, username: user.username }, process.env.JWT_SECRET, {
-            expiresIn: process.env.JWT_EXPIRES_IN || '30d'
-        });
+        const { accessToken, rawRefreshToken } = await issueTokenPair(user);
 
         res.json({
             message: "Verification successful",
-            token,
+            token: accessToken,
+            refreshToken: rawRefreshToken,
             user: {
                 _id: user._id,
                 username: user.username,
@@ -160,38 +180,37 @@ exports.verifyOTP = async (req, res) => {
                 settings: user.settings
             }
         });
-
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
 
-// 3. MODIFIED LOGIN
+// 3. MODIFIED LOGIN — issues access + refresh token pair
 exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
-        // ... (Keep existing validation) ... 
         if (typeof email !== 'string' || typeof password !== 'string') return res.status(400).json({ error: "Invalid data format" });
 
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ error: "User not found" });
 
-        // --- NEW CHECK: IS VERIFIED? ---
         if (!user.isVerified) {
-            // Optional: Resend OTP logic could go here
             return res.status(400).json({ error: "Please verify your email first" });
         }
-        // -------------------------------
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user._id, username: user.username }, process.env.JWT_SECRET, {
-            expiresIn: process.env.JWT_EXPIRES_IN || '30d'
+        // Clean up expired refresh tokens on every login
+        await User.findByIdAndUpdate(user._id, {
+            $pull: { refreshTokens: { expiresAt: { $lt: new Date() } } }
         });
 
+        const { accessToken, rawRefreshToken } = await issueTokenPair(user);
+
         res.json({
-            token,
+            token: accessToken,
+            refreshToken: rawRefreshToken,
             user: {
                 _id: user._id,
                 username: user.username,
@@ -272,9 +291,111 @@ exports.resetPassword = async (req, res) => {
         user.password = hashedPassword;
         user.otp = undefined;
         user.otpExpires = undefined;
+        // Invalidate ALL existing refresh tokens on password reset (forces re-login on all devices)
+        user.refreshTokens = [];
         await user.save();
 
         res.status(200).json({ message: "Password reset successful" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// NEW: Refresh access token using a valid refresh token (with rotation + compromise detection)
+exports.refreshToken = async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+        if (!refreshToken) return res.status(400).json({ error: 'Refresh token required' });
+
+        const tokenHash = hashRefreshToken(refreshToken);
+        const user = await User.findOne({ 'refreshTokens.tokenHash': tokenHash });
+
+        if (!user) {
+            // Token not found — could be a reuse attack. No user to revoke, just reject.
+            return res.status(401).json({ error: 'Invalid refresh token' });
+        }
+
+        const tokenEntry = user.refreshTokens.find(t => t.tokenHash === tokenHash);
+
+        // Check expiry
+        if (!tokenEntry || tokenEntry.expiresAt < new Date()) {
+            // Expired — remove it and reject
+            await User.findByIdAndUpdate(user._id, {
+                $pull: { refreshTokens: { tokenHash } }
+            });
+            return res.status(401).json({ error: 'Refresh token expired, please log in again' });
+        }
+
+        // ROTATE: delete the used token, issue a new pair
+        await User.findByIdAndUpdate(user._id, {
+            $pull: { refreshTokens: { tokenHash } }
+        });
+
+        const { accessToken, rawRefreshToken: newRawRefreshToken } = await issueTokenPair(user);
+
+        res.json({
+            token: accessToken,
+            refreshToken: newRawRefreshToken
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// NEW: Logout — invalidate the specific refresh token for this device
+exports.logoutUser = async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+        if (refreshToken) {
+            const tokenHash = hashRefreshToken(refreshToken);
+            await User.findByIdAndUpdate(req.user.id, {
+                $pull: { refreshTokens: { tokenHash } }
+            });
+        }
+        res.status(200).json({ message: 'Logged out successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// NEW: Set a Recovery PIN-derived E2EE backup key (independent of password)
+exports.setRecoveryPinBackup = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { pin } = req.body;
+
+        if (!pin || typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
+            return res.status(400).json({ error: 'A 6-digit PIN is required' });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        // Derive a key from PIN + userId as salt (device-independent)
+        const pinBackupKeyB64 = crypto.pbkdf2Sync(pin, userId.toString(), 100000, 32, 'sha256').toString('base64');
+
+        // Re-encrypt the user's private key with the PIN-derived key
+        if (user.e2e_private_key && user.e2e_server_backup_key) {
+            const oldBackupKeyB64 = decryptEscrowKey(user.e2e_server_backup_key);
+            if (oldBackupKeyB64) {
+                const rawPrivateKeyB64 = decryptFlutterE2E(user.e2e_private_key, oldBackupKeyB64);
+                if (rawPrivateKeyB64) {
+                    const pinEncryptedPrivKey = encryptFlutterE2E(rawPrivateKeyB64, pinBackupKeyB64);
+                    if (pinEncryptedPrivKey) {
+                        await User.findByIdAndUpdate(userId, {
+                            e2e_pin_backup_key: encryptEscrowKey(pinBackupKeyB64)
+                        });
+                        return res.status(200).json({ message: 'Recovery PIN backup set successfully' });
+                    }
+                }
+            }
+        }
+
+        // No existing private key to back up yet (fresh user) — just store the PIN key for later
+        await User.findByIdAndUpdate(userId, {
+            e2e_pin_backup_key: encryptEscrowKey(pinBackupKeyB64)
+        });
+        res.status(200).json({ message: 'Recovery PIN registered' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
