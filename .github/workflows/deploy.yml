@@ -12,16 +12,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Copy nginx config to server
-      uses: appleboy/scp-action@v0.1.7
-      with:
-        host: ${{ secrets.VM_HOST }}
-        username: ${{ secrets.VM_USERNAME }}
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        port: 22
-        source: "nginx/blinkchat.conf"
-        target: "/tmp/"
-
     - name: Deploy to Server via SSH
       uses: appleboy/ssh-action@v1.0.0
       with:
@@ -32,25 +22,51 @@ jobs:
         script: |
           echo "🚀 Starting Deployment..."
 
-          # Update nginx config
-          sudo cp /tmp/nginx/blinkchat.conf /etc/nginx/sites-available/blinkchat
+          # ── Update nginx config (non-blocking: Docker always restarts even if nginx fails) ──
+          sudo tee /etc/nginx/sites-available/blinkchat > /dev/null << 'NGINXEOF'
+          server {
+              listen 80;
+              server_name blinkchat.uaenorth.cloudapp.azure.com;
+
+              location /login { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /register { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /verify-otp { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /forgot-password { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /reset-password { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /refresh-token { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /logout { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /search { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /fcm-token { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /update-profile { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /e2e-key { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /my-e2e-keys { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /users/ { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /e2e-pin-backup { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /upload { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; client_max_body_size 15M; }
+              location /chat/ { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /contacts/ { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+              location /socket.io/ { proxy_pass http://127.0.0.1:3000; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; }
+              location / { root /var/www/blinkchat; index index.html; try_files $uri $uri/ /index.html; }
+          }
+          NGINXEOF
+
           sudo ln -sf /etc/nginx/sites-available/blinkchat /etc/nginx/sites-enabled/blinkchat
           sudo rm -f /etc/nginx/sites-enabled/default
-          sudo nginx -t && sudo systemctl reload nginx
-          echo "✅ Nginx config updated and reloaded"
+          if sudo nginx -t; then
+            sudo systemctl reload nginx
+            echo "✅ Nginx config updated and reloaded"
+          else
+            echo "⚠️ Nginx config test failed — keeping existing nginx config"
+          fi
 
-          # Go to the project folder
+          # ── Rebuild and restart Docker backend ──────────────────────────────
           cd ~/Chat-App-Backend
-
-          # Discard local changes to avoid conflict
           git reset --hard
-
-          # Pull the latest code from GitHub
           git pull origin main
 
-          # Rebuild and Restart Docker
           echo "🐳 Rebuilding Docker Containers..."
           sudo docker compose down
           sudo docker compose up -d --build
 
-          echo "✅ Deployment Successful!"
+          echo "✅ Deployment Successful!"
+
