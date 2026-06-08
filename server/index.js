@@ -26,12 +26,24 @@ const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
   : ['http://localhost:3000'];
 
+// Automatically add http equivalent of allowed origins to help with HTTP-only setups
+const allAllowedOrigins = [...allowedOrigins];
+allowedOrigins.forEach(origin => {
+  if (origin.startsWith('https://')) {
+    allAllowedOrigins.push(origin.replace('https://', 'http://'));
+  }
+});
+
 const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
     // Exact match against whitelist
-    if (allowedOrigins.includes(origin)) {
+    if (allAllowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    // Allow any blinkchat domain (both http and https)
+    if (/^https?:\/\/blinkchat\.uaenorth\.cloudapp\.azure\.com$/.test(origin)) {
       return callback(null, true);
     }
     // Allow any localhost/127.0.0.1 origin (Flutter web dev server uses random ports)
