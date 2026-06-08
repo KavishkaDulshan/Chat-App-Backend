@@ -9,6 +9,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Copy nginx config to server
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.VM_HOST }}
+        username: ${{ secrets.VM_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 22
+        source: "nginx/blinkchat.conf"
+        target: "/tmp/"
+
     - name: Deploy to Server via SSH
       uses: appleboy/ssh-action@v1.0.0
       with:
@@ -17,21 +30,27 @@ jobs:
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         port: 22
         script: |
-          # 1. Stop the server just in case
           echo "🚀 Starting Deployment..."
 
-          # 2. Go to the project folder
+          # Update nginx config
+          sudo cp /tmp/nginx/blinkchat.conf /etc/nginx/sites-available/blinkchat
+          sudo ln -sf /etc/nginx/sites-available/blinkchat /etc/nginx/sites-enabled/blinkchat
+          sudo rm -f /etc/nginx/sites-enabled/default
+          sudo nginx -t && sudo systemctl reload nginx
+          echo "✅ Nginx config updated and reloaded"
+
+          # Go to the project folder
           cd ~/Chat-App-Backend
 
-          # 3. Discard local changes (like the manual edits we made) to avoid conflict
+          # Discard local changes to avoid conflict
           git reset --hard
 
-          # 4. Pull the latest code from GitHub
+          # Pull the latest code from GitHub
           git pull origin main
 
-          # 5. Rebuild and Restart Docker
+          # Rebuild and Restart Docker
           echo "🐳 Rebuilding Docker Containers..."
           sudo docker compose down
           sudo docker compose up -d --build
 
-          echo "✅ Deployment Successful!"
+          echo "✅ Deployment Successful!"
