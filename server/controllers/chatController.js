@@ -2,6 +2,7 @@ const Conversation = require('../models/Conversation');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const { decrypt } = require('../utils/crypto');
+const logger = require('../utils/logger');
 
 const isE2EEnvelope = (text) => typeof text === 'string' && text.startsWith('e2e:v1:');
 
@@ -18,10 +19,10 @@ exports.getConversations = async (req, res) => {
             if (!otherUser) {
                 // Fire-and-forget: delete orphaned conversation and its messages
                 Message.deleteMany({ conversation_id: conv._id }).catch(err =>
-                    console.error('Ghost cleanup (messages) error:', err)
+                    logger.error('Ghost cleanup messages error', { error: err.message })
                 );
                 Conversation.findByIdAndDelete(conv._id).catch(err =>
-                    console.error('Ghost cleanup (conversation) error:', err)
+                    logger.error('Ghost cleanup conversation error', { error: err.message })
                 );
                 return null;
             }

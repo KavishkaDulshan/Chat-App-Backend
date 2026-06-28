@@ -8,6 +8,7 @@ const { encrypt, decrypt } = require('../utils/crypto');
 const socketAuth = require('../middleware/socketAuth');
 const admin = require('../config/firebase');
 const { deleteBlob } = require('../config/azureStorage');
+const logger = require('../utils/logger');
 
 const isE2EEnvelope = (text) => typeof text === 'string' && text.startsWith('e2e:v1:');
 
@@ -30,7 +31,7 @@ async function getActiveChatPartners(userId) {
 
         return Array.from(partners);
     } catch (err) {
-        console.error("Error finding chat partners:", err);
+        logger.error('Error finding chat partners', { error: err.message, userId });
         return [];
     }
 }
@@ -42,7 +43,7 @@ module.exports = (io) => {
         const user = socket.data.user;
         const userId = user.id;
 
-        console.log(`✅ Secure Connection: ${user.username}`);
+        logger.info('Socket connected', { userId, username: user.username, socketId: socket.id });
         socket.join(userId);
         User.findByIdAndUpdate(userId, { is_online: true }).exec();
 
@@ -155,13 +156,13 @@ module.exports = (io) => {
                                     await admin.messaging().sendEachForMulticast(fcmPayload);
                                 }
                             } catch (fcmError) {
-                                console.error("❌ FCM Error:", fcmError);
+                                logger.error('FCM push error', { error: fcmError.message, recipientId: pidStr });
                             }
                         }
                     });
                 }
 
-            } catch (err) { console.error("Message Error:", err); }
+            } catch (err) { logger.error('Message error', { error: err.message, senderId }); }
         });
 
         // 2. JOIN PRIVATE CHAT
@@ -226,7 +227,7 @@ module.exports = (io) => {
                 socket.join(roomId);
                 socket.emit('private_chat_ready', { roomId, history: messagesWithDetails, hasMore });
 
-            } catch (err) { console.error("Join Chat Error:", err); }
+            } catch (err) { logger.error('Join chat error', { error: err.message, userId: myUserId }); }
         });
 
         // 2b. LOAD MORE MESSAGES (cursor-based pagination)
@@ -275,7 +276,7 @@ module.exports = (io) => {
 
                 const hasMore = rawMessages.length === 50;
                 socket.emit('more_messages', { roomId, messages: messagesWithDetails, hasMore });
-            } catch (err) { console.error("Load More Messages Error:", err); }
+            } catch (err) { logger.error('Load more messages error', { error: err.message, roomId }); }
         });
 
         // 3. READ RECEIPTS & DELETE
@@ -288,7 +289,7 @@ module.exports = (io) => {
                     { $set: { status: 'read' } }
                 );
                 io.to(roomId).emit('conversation:read_ack', { roomId, readerId: myUserId });
-            } catch (err) { console.error(err); }
+            } catch (err) { logger.error('Conversation read error', { error: err.message, roomId }); }
         });
 
         socket.on('message:delete', async ({ messageId, roomId }) => {
@@ -300,10 +301,10 @@ module.exports = (io) => {
                 if (msg.type === 'image' || msg.type === 'audio') {
                     try {
                         const decryptedUrl = decrypt(msg.content);
-                        await deleteBlob(decryptedUrl);
-                    } catch (decErr) {
-                        console.error('Failed to decrypt or delete blob:', decErr);
-                    }
+                    await deleteBlob(decryptedUrl);
+                } catch (decErr) {
+                    logger.error('Failed to decrypt or delete blob', { error: decErr.message, messageId });
+                }
                     // Hard-delete the document from MongoDB
                     await Message.deleteOne({ _id: messageId });
                 } else {
@@ -314,7 +315,7 @@ module.exports = (io) => {
                 }
 
                 io.to(roomId).emit('message:deleted', messageId);
-            } catch (err) { console.error('message:delete error:', err); }
+            } catch (err) { logger.error('Message delete error', { error: err.message, messageId }); }
         });
 
         socket.on('message:delivered', async ({ messageId, roomId }) => {
@@ -325,7 +326,7 @@ module.exports = (io) => {
                     await msg.save();
                     io.to(roomId).emit('message:status_update', { messageId, status: 'delivered', roomId });
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) { logger.error('Message delivered error', { error: err.message, messageId }); }
         });
 
         socket.on('typing', (roomId) => socket.broadcast.to(roomId).emit('display_typing', { username: socket.data.user.username, roomId }));
@@ -406,7 +407,7 @@ module.exports = (io) => {
                 socket.emit('contact:request_sent', { requestId: newReq._id, toUserId });
                 if (callback) callback({ status: 'success', data: { status: 'pending_sent' } });
             } catch (err) {
-                if (err.code !== 11000) console.error('contact:send_request error:', err);
+                if (err.code !== 11000) logger.error('contact:send_request error', { error: err.message, fromId, toUserId });
                 if (callback) callback({ status: 'error', message: err.message });
             }
         });
@@ -444,7 +445,7 @@ module.exports = (io) => {
                 socket.emit('contact:request_accepted', { byUserId: fromUserId, requestId });
                 if (callback) callback({ status: 'success' });
             } catch (err) {
-                console.error('contact:accept_request error:', err);
+                logger.error('contact:accept_request error', { error: err.message, myId, fromUserId });
                 if (callback) callback({ status: 'error', message: err.message });
             }
         });
@@ -476,7 +477,7 @@ module.exports = (io) => {
                 
                 if (callback) callback({ status: 'success' });
             } catch (err) {
-                console.error('contact:decline_request error:', err);
+                logger.error('contact:decline_request error', { error: err.message, myId });
                 if (callback) callback({ status: 'error', message: err.message });
             }
         });
@@ -487,7 +488,7 @@ module.exports = (io) => {
             offlinePartners.forEach(partnerId => {
                 io.to(partnerId).emit('user_status_change', { userId: userId, isOnline: false });
             });
-            console.log(`❌ Disconnected: ${user.username}`);
+            logger.info('Socket disconnected', { userId, username: user.username, socketId: socket.id });
         });
     });
 };

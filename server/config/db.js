@@ -1,26 +1,26 @@
 const mongoose = require('mongoose');
+const logger = require('../utils/logger');
 
 const connectDB = async () => {
     const mongoUri = process.env.MONGO_URI;
 
     if (!mongoUri) {
-        console.error('❌ MONGO_URI is missing. Set your MongoDB Atlas URI in server/.env.');
+        logger.error('MONGO_URI is missing');
         process.exit(1);
     }
 
     if (mongoUri.includes('<db_password>')) {
-        console.error('❌ MONGO_URI still contains <db_password>. Replace it with your real Atlas password.');
+        logger.error('MONGO_URI still contains <db_password>');
         process.exit(1);
     }
 
     const connectWithRetry = async () => {
         try {
             await mongoose.connect(mongoUri);
-            console.log('✅ MongoDB Connected!');
+            logger.info('MongoDB connected');
         } catch (err) {
-            console.error('❌ MongoDB Connection Error:', err.message);
-            console.log('⏳ Retrying in 5 seconds...');
-            setTimeout(connectWithRetry, 5000); // Retry after 5 seconds
+            logger.error('MongoDB connection error', { error: err.message });
+            setTimeout(connectWithRetry, 5000);
         }
     };
 

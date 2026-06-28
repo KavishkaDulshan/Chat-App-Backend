@@ -1,37 +1,32 @@
-// Polyfill for global crypto required by @azure/storage-blob in Node 18
 const { webcrypto } = require('crypto');
 if (!globalThis.crypto) {
   globalThis.crypto = webcrypto;
 }
 
-// server/config/azureStorage.js
 const { BlobServiceClient } = require('@azure/storage-blob');
 require('dotenv').config();
+const logger = require('../utils/logger');
 
 const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const containerName = process.env.AZURE_STORAGE_CONTAINER || 'media';
 
 if (!connectionString) {
-    console.error('❌ AZURE_STORAGE_CONNECTION_STRING is not set in .env');
+    logger.error('AZURE_STORAGE_CONNECTION_STRING is not set');
     process.exit(1);
 }
 
 const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
 const containerClient = blobServiceClient.getContainerClient(containerName);
 
-// Ensure container exists (creates on first run)
 (async () => {
     try {
-        await containerClient.createIfNotExists({
-            access: 'blob' // Public read access for blobs (URLs work directly)
-        });
-        
-        // Configure CORS for Flutter Web (CanvasKit requires CORS for external images)
+        await containerClient.createIfNotExists({ access: 'blob' });
+
         const serviceProperties = await blobServiceClient.getProperties();
         let corsRules = serviceProperties.cors || [];
-        
+
         const hasWildcardCors = corsRules.some(rule => rule.allowedOrigins === '*');
-        
+
         if (!hasWildcardCors) {
             corsRules.push({
                 allowedOrigins: '*',
@@ -42,12 +37,12 @@ const containerClient = blobServiceClient.getContainerClient(containerName);
             });
             serviceProperties.cors = corsRules;
             await blobServiceClient.setProperties(serviceProperties);
-            console.log(`✅ Azure Blob CORS configured for Flutter Web`);
+            logger.info('Azure Blob CORS configured');
         }
 
-        console.log(`✅ Azure Blob container "${containerName}" ready`);
+        logger.info(`Azure Blob container "${containerName}" ready`);
     } catch (err) {
-        console.error('❌ Azure container init error:', err.message);
+        logger.error('Azure container init error', { error: err.message });
     }
 })();
 
@@ -79,9 +74,8 @@ async function deleteBlob(blobUrl) {
         // Extract blob name from URL: https://<account>.blob.core.windows.net/<container>/<blobName>
         const url = new URL(blobUrl);
 
-        // Only delete Azure blobs (skip Cloudinary and other legacy URLs)
         if (!url.hostname.endsWith('.blob.core.windows.net')) {
-            console.log(`⏭️ Skipping non-Azure URL: ${blobUrl.substring(0, 60)}...`);
+            logger.debug('Skipping non-Azure URL', { blobUrl: blobUrl.substring(0, 60) });
             return false;
         }
 
@@ -93,10 +87,10 @@ async function deleteBlob(blobUrl) {
         const blobName = pathParts.slice(1).join('/');
         const blockBlobClient = containerClient.getBlockBlobClient(blobName);
         await blockBlobClient.deleteIfExists();
-        console.log(`🗑️ Deleted blob: ${blobName}`);
+        logger.info('Deleted blob', { blobName });
         return true;
     } catch (err) {
-        console.error(`❌ Delete blob error for ${blobUrl}:`, err.message);
+        logger.error('Delete blob error', { blobUrl, error: err.message });
         return false;
     }
 }

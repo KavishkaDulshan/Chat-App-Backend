@@ -1,41 +1,34 @@
 const admin = require('firebase-admin');
 const path = require('path');
 const fs = require('fs');
+const logger = require('../utils/logger');
 
-// 1. Define the specific environment variable name
 const FIREBASE_ENV_VAR = process.env.FIREBASE_SERVICE_ACCOUNT;
 
 let serviceAccount;
 
 try {
-    // SCENARIO A: PRODUCTION (Render/Cloud)
-    // If the Environment Variable exists, parse it directly.
     if (FIREBASE_ENV_VAR) {
-        console.log("🔥 Loading Firebase config from Environment Variable...");
+        logger.info('Loading Firebase config from environment variable');
         serviceAccount = JSON.parse(FIREBASE_ENV_VAR);
-    }
-    // SCENARIO B: DEVELOPMENT (Local)
-    // If env var is missing, look for the file.
-    else {
+    } else {
         const serviceAccountPath = path.join(__dirname, 'service-account.json');
 
         if (fs.existsSync(serviceAccountPath)) {
-            console.log("📂 Loading Firebase config from local file...");
+            logger.info('Loading Firebase config from local file');
             serviceAccount = require(serviceAccountPath);
         } else {
             throw new Error("No Firebase credentials found! Set FIREBASE_SERVICE_ACCOUNT or add service-account.json");
         }
     }
 
-    // Initialize Admin SDK
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
-    console.log("🔥 Firebase Admin Initialized Successfully");
+    logger.info('Firebase Admin initialized');
 
 } catch (error) {
-    console.error("❌ Firebase Init Error:", error.message);
-    // In production, we want the app to crash if this fails, so we know something is wrong.
+    logger.error('Firebase init error', { error: error.message });
     if (process.env.NODE_ENV === 'production') {
         process.exit(1);
     }

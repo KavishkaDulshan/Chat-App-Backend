@@ -1,6 +1,7 @@
 const ContactRequest = require('../models/ContactRequest');
 const Conversation = require('../models/Conversation');
 const User = require('../models/User');
+const logger = require('../utils/logger');
 
 // Helper: check if two users already have a conversation (treated as contacts)
 async function alreadyHaveConversation(userAId, userBId) {

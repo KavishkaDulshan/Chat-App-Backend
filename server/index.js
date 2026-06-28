@@ -20,6 +20,8 @@ const chatRoutes = require('./routes/chatRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const socketHandler = require('./sockets/socketHandler');
+const correlationId = require('./middleware/correlationId');
+const logger = require('./utils/logger');
 
 // --- CORS Configuration ---
 const allowedOrigins = process.env.CORS_ORIGINS
@@ -50,7 +52,7 @@ const corsOptions = {
     if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       return callback(null, true);
     }
-    console.warn(`⚠️ CORS rejected origin: ${origin}`);
+    logger.warn('CORS rejected origin', { origin });
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -62,6 +64,26 @@ const app = express();
 // Trust the first proxy (Docker/Nginx/Azure reverse proxy)
 // Required for express-rate-limit to correctly read client IPs
 app.set('trust proxy', 1);
+
+// --- Phase 0: Correlation ID + Request Logging ---
+app.use(correlationId);
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info(`${req.method} ${req.originalUrl} ${res.statusCode}`, {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      durationMs: duration,
+      ip: req.ip,
+    });
+  });
+  next();
+});
+// -------------------------------------------------
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -112,5 +134,5 @@ socketHandler(io);
 // 5. Start Server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  logger.info(`Server started`, { port: PORT, nodeEnv: process.env.NODE_ENV });
 });

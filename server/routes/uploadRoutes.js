@@ -1,10 +1,10 @@
-// server/routes/uploadRoutes.js
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const sharp = require('sharp');
 const crypto = require('crypto');
 const { uploadBuffer } = require('../config/azureStorage');
+const logger = require('../utils/logger');
 
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -63,21 +63,21 @@ router.post('/upload', upload.single('file'), async (req, res) => {
             uploadData = await compressImage(buffer);
             blobName = generateBlobName('images', '.webp');
             contentType = 'image/webp';
-            console.log(`📸 Image compressed: ${(buffer.length / 1024).toFixed(1)}KB → ${(uploadData.length / 1024).toFixed(1)}KB (WebP)`);
+            logger.info('Image compressed', { originalKB: (buffer.length / 1024).toFixed(1), compressedKB: (uploadData.length / 1024).toFixed(1) });
         } else {
             // ── AUDIO / OTHER: Upload as-is (already compressed by device codec) ──
             const ext = originalname ? '.' + originalname.split('.').pop() : '.bin';
             blobName = generateBlobName('audio', ext);
             uploadData = buffer;
             contentType = mimetype || 'application/octet-stream';
-            console.log(`🎵 Audio uploaded: ${(buffer.length / 1024).toFixed(1)}KB`);
+            logger.info('Audio uploaded', { sizeKB: (buffer.length / 1024).toFixed(1) });
         }
 
         const url = await uploadBuffer(uploadData, blobName, contentType);
         res.json({ url });
 
     } catch (err) {
-        console.error("Upload Error:", err);
+        logger.error('Upload error', { error: err.message });
         res.status(500).json({ error: "File upload failed" });
     }
 });
@@ -99,11 +99,11 @@ router.post('/upload/profile', upload.single('file'), async (req, res) => {
         const blobName = generateBlobName('profiles', '.webp');
         const url = await uploadBuffer(uploadData, blobName, 'image/webp');
 
-        console.log(`👤 Profile pic: ${(buffer.length / 1024).toFixed(1)}KB → ${(uploadData.length / 1024).toFixed(1)}KB`);
+        logger.info('Profile pic compressed', { originalKB: (buffer.length / 1024).toFixed(1), compressedKB: (uploadData.length / 1024).toFixed(1) });
         res.json({ url });
 
     } catch (err) {
-        console.error("Profile Upload Error:", err);
+        logger.error('Profile upload error', { error: err.message });
         res.status(500).json({ error: "Profile picture upload failed" });
     }
 });

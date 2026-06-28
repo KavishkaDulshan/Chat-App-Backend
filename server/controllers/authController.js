@@ -5,6 +5,7 @@ const sendEmail = require('../utils/sendEmail');
 const { deleteBlob } = require('../config/azureStorage');
 const { getContactStatusHelper } = require('./contactController');
 const crypto = require('crypto');
+const logger = require('../utils/logger');
 
 const MASTER_KEY_SECRET = process.env.E2E_MASTER_KEY || 'default_master_key_123_ensure_32_bytes_length';
 const SERVER_MASTER_KEY = crypto.scryptSync(MASTER_KEY_SECRET, 'server_salt', 32);
@@ -275,13 +276,13 @@ exports.resetPassword = async (req, res) => {
                         if (newEncryptedPrivateKey) {
                             user.e2e_private_key = newEncryptedPrivateKey;
                             user.e2e_server_backup_key = encryptEscrowKey(newBackupKeyB64);
-                            console.log(`Successfully recovered and re-encrypted E2E private key for ${user.email}`);
+                            logger.info('E2E key recovered and re-encrypted', { email: user.email });
                         }
                     }
                 }
-            } catch (err) {
-                console.error(`E2EE Recovery Failed for ${user.email}:`, err.message);
-            }
+        } catch (err) {
+            logger.error('E2EE recovery failed', { email: user.email, error: err.message });
+        }
         }
         // ==============================================================
 
@@ -416,7 +417,7 @@ exports.saveFcmToken = async (req, res) => {
 
         res.status(200).json({ message: "Token saved" });
     } catch (err) {
-        console.error("Save Token Error:", err);
+        logger.error('Save FCM token error', { error: err.message });
         res.status(500).json({ message: "Server error" });
     }
 };
@@ -463,7 +464,7 @@ exports.searchUser = async (req, res) => {
         res.status(200).json(results);
 
     } catch (err) {
-        console.error("Search Error:", err);
+        logger.error('Search error', { error: err.message });
         res.status(500).json({ error: "Server error during search" });
     }
 };

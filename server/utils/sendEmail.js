@@ -1,14 +1,13 @@
 const nodemailer = require('nodemailer');
+const logger = require('./logger');
 
 const sendEmail = async (email, otp) => {
     try {
-        // Create a Transporter (Using Gmail for testing)
-        // For production, use SendGrid or a proper SMTP service
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
-                user: process.env.EMAIL_USER, // Add this to your .env file
-                pass: process.env.EMAIL_PASS  // Add this to your .env file (App Password, not Login Password)
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
             }
         });
 
@@ -20,9 +19,9 @@ const sendEmail = async (email, otp) => {
         };
 
         await transporter.sendMail(mailOptions);
-        console.log(`📧 Email sent to ${email}`);
+        logger.info('Email sent', { email });
     } catch (error) {
-        console.error("Email Error:", error);
+        logger.error('Email error', { error: error.message });
         throw new Error("Email could not be sent");
     }
 };
