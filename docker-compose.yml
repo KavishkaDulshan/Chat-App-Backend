@@ -26,7 +26,6 @@ services:
     environment:
       - PORT=3010
       - SERVICE_NAME=auth-service
-      - MONGO_URI=mongodb://mongodb:27017/chat-app
       - JWT_SECRET=${JWT_SECRET:-my_super_secret_key_123}
       - E2E_MASTER_KEY=${E2E_MASTER_KEY:-default_master_key_123_ensure_32_bytes_length}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:80}
@@ -46,7 +45,6 @@ services:
       - ./server/.env
     environment:
       - SERVICE_NAME=chat-server
-      - MONGO_URI=mongodb://mongodb:27017/chat-app
       - REDIS_HOST=redis
       - JWT_SECRET=${JWT_SECRET:-my_super_secret_key_123}
     volumes:
