@@ -12,9 +12,9 @@ const connectDB = async () => {
     const connectWithRetry = async () => {
         try {
             await mongoose.connect(mongoUri);
-            logger.info('Chat MongoDB connected');
+            logger.info('Auth MongoDB connected');
         } catch (err) {
-            logger.error('Chat MongoDB connection error', { error: err.message });
+            logger.error('Auth MongoDB connection error', { error: err.message });
             setTimeout(connectWithRetry, 5000);
         }
     };
