@@ -62,7 +62,7 @@ const app = express();
 
 // Trust the first proxy (Docker/Nginx/Azure reverse proxy)
 // Required for express-rate-limit to correctly read client IPs
-app.set('trust proxy', 1);
+app.set('trust proxy', true);
 
 // --- Phase 0: Correlation ID + Request Logging ---
 app.use(correlationId);
