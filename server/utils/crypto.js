@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 
 const algorithm = 'aes-256-cbc';
-const key = Buffer.from(process.env.MESSAGE_SECRET_KEY, 'hex');
+const secretKey = process.env.MESSAGE_SECRET_KEY || 'default_message_secret_key_123_ensure_32_bytes_length';
+const key = Buffer.from(crypto.createHash('sha256').update(secretKey).digest('hex').substring(0, 64), 'hex');
 
 const encrypt = (text) => {
     if (!text) return text;
